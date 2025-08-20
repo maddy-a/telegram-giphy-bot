@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Giphy Mini App</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+      body { font-family: system-ui, sans-serif; padding: 16px; }
+      button { padding: 10px 14px; border-radius: 8px; border: 1px solid #ccc; }
+    </style>
+  </head>
+  <body>
+    <h1>Giphy Mini App</h1>
+    <p id="hello">Loading…</p>
+    <button id="close">Close</button>
+
+    <script>
+      const tg = window.Telegram.WebApp;
+      tg.ready();
+      tg.expand(); // use max height when possible
+
+      const name = tg.initDataUnsafe?.user?.first_name || "there";
+      document.getElementById("hello").textContent = `Hi ${name} 👋 — JS context is live.`;
+
+      document.getElementById("close").addEventListener("click", () => tg.close());
+    </script>
+  </body>
+</html>
+
