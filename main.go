@@ -29,13 +29,23 @@ type giphyResponse struct {
 	} `json:"data"`
 }
 
+type webAppPayload struct {
+	Type      string `json:"type"`
+	ID        string `json:"id,omitempty"`
+	Title     string `json:"title,omitempty"`
+	URL       string `json:"url,omitempty"`
+	Downsized string `json:"downsized,omitempty"` // not used now
+}
+
 func main() {
 	_ = godotenv.Load() // OK if .env is missing in prod
 
 	token := os.Getenv("TELEGRAM_BOT_TOKEN")
 	apiKey := os.Getenv("GIPHY_API_KEY")
-	if token == "" || apiKey == "" {
-		log.Fatal("TELEGRAM_BOT_TOKEN and GIPHY_API_KEY must be set")
+	webAppURL := os.Getenv("WEBAPP_URL")
+
+	if token == "" || apiKey == "" || webAppURL == "" {
+		log.Fatal("TELEGRAM_BOT_TOKEN, GIPHY_API_KEY and WEBAPP_URL must be set")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -43,6 +53,65 @@ func main() {
 
 	b, err := bot.New(token, bot.WithDefaultHandler(func(ctx context.Context, b *bot.Bot, update *models.Update) {
 		if update.Message == nil || update.Message.Text == "" {
+			return
+		}
+
+		if update.Message != nil && update.Message.WebAppData != nil {
+			var p webAppPayload
+			if err := json.Unmarshal([]byte(update.Message.WebAppData.Data), &p); err == nil && p.Type == "gif" && p.URL != "" {
+				_, _ = b.SendAnimation(ctx, &bot.SendAnimationParams{
+					ChatID:    update.Message.Chat.ID,
+					Animation: &models.InputFileString{Data: p.URL},
+				})
+				return
+			}
+		}
+
+		if update.Message != nil && update.Message.Text == "/open" {
+			if webAppURL == "" {
+				_, _ = b.SendMessage(ctx, &bot.SendMessageParams{ChatID: update.Message.Chat.ID, Text: "WEBAPP_URL not set"})
+				return
+			}
+			kb := &models.ReplyKeyboardMarkup{
+				Keyboard: [][]models.KeyboardButton{
+					{
+						{Text: "Open GIF Mini App", WebApp: &models.WebAppInfo{URL: webAppURL}},
+					},
+				},
+				ResizeKeyboard:  true,
+				OneTimeKeyboard: true,
+			}
+			_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID:      update.Message.Chat.ID,
+				Text:        "Tap below to open:",
+				ReplyMarkup: kb,
+			})
+			return
+		}
+ 
+		if update.Message != nil && update.Message.Text == "/app" {
+			if webAppURL == "" {
+				_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
+					ChatID: update.Message.Chat.ID,
+					Text:   "WEBAPP_URL not set in .env",
+				})
+				return
+			}
+			kb := &models.InlineKeyboardMarkup{
+				InlineKeyboard: [][]models.InlineKeyboardButton{
+					{
+						{
+							Text:   "Open GIF Mini App",
+							WebApp: &models.WebAppInfo{URL: webAppURL},
+						},
+					},
+				},
+			}
+			_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID:      update.Message.Chat.ID,
+				Text:        "Tap to open the Mini App:",
+				ReplyMarkup: kb,
+			})
 			return
 		}
 
@@ -100,4 +169,3 @@ func searchGIF(ctx context.Context, apiKey, q string) (string, error) {
 	}
 	return "", fmt.Errorf("no url in result")
 }
-
