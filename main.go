@@ -38,6 +38,22 @@ type webAppPayload struct {
 	Downsized string `json:"downsized,omitempty"` // not used now
 }
 
+var startedAt = time.Now()
+
+func handleHealth(appName string, configOK bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":         true,
+			"app":        appName,
+			"uptime_sec": int(time.Since(startedAt).Seconds()),
+			"config_ok":  configOK, // true if required envs were present at startup
+			"time_utc":   time.Now().UTC().Format(time.RFC3339),
+		})
+	}
+}
+
 func main() {
 	_ = godotenv.Load() // OK if .env is missing in prod
 
@@ -53,6 +69,15 @@ func main() {
 	if token == "" || apiKey == "" || webAppURL == "" {
 		log.Fatal("TELEGRAM_BOT_TOKEN, GIPHY_API_KEY and WEBAPP_URL must be set")
 	}
+
+	appName := os.Getenv("APP_NAME")
+	if appName == "" {
+		appName = "telegram-giphy-bot"
+	}
+
+	configOK := (token != "" && apiKey != "")
+
+	http.HandleFunc("/health", handleHealth(appName, configOK))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()

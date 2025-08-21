@@ -32,12 +32,11 @@
 <script>
   // Telegram Mini App bootstrap
   const tg = window.Telegram.WebApp;
-  tg.ready();
-  tg.expand();
+  tg.ready(); tg.expand();
 
-  // Point this to your HTTPS proxy (ngrok or your host)
-  // Example: "https://abc123.ngrok.io"
-  const API_BASE = "https://6ac3635cfddd.ngrok-free.app";
+  // BACKEND API on Heroku (replace YOUR_APP with your app name)
+  // Ensure your Heroku app sets: ALLOWED_ORIGIN=https://maddy-a.github.io
+  const API_BASE = "https://telegram-giphy-bot-9a11b0e83d02.herokuapp.com";
 
   // UI elements
   const qEl   = document.getElementById("q");
@@ -48,9 +47,7 @@
   goEl.addEventListener("click", doSearch);
   qEl.addEventListener("keydown", (e) => { if (e.key === "Enter") doSearch(); });
 
-  function showMsg(text) {
-    msgEl.textContent = text;
-  }
+  function showMsg(t){ msgEl.textContent = t; }
 
   async function doSearch() {
     const q = qEl.value.trim();
@@ -59,23 +56,18 @@
     resEl.innerHTML = "";
     showMsg("Searching…");
 
-    const url = `${API_BASE}/search?q=${encodeURIComponent(q)}`;
-
     let r, j;
     try {
-      r = await fetch(url, { method: "GET" });
+      r = await fetch(`${API_BASE}/search?q=${encodeURIComponent(q)}`, { method: "GET" });
       j = await r.json();
     } catch {
-      showMsg("Network error.");
-      try { tg.showAlert("Network error contacting API."); } catch {}
+      showMsg("Network error."); try { tg.showAlert("Network error."); } catch {}
       return;
     }
 
     if (!r.ok || (j.meta && j.meta.status !== 200)) {
-      const status = j?.meta?.status || r.status;
-      const msg    = j?.meta?.msg || r.statusText || "API error";
-      showMsg(`API error: ${status} ${msg}`);
-      try { tg.showAlert(`API error: ${status} ${msg}`); } catch {}
+      const s = j?.meta?.status || r.status, m = j?.meta?.msg || r.statusText || "API error";
+      showMsg(`API error: ${s} ${m}`); try { tg.showAlert(`API error: ${s} ${m}`); } catch {}
       return;
     }
 
@@ -99,10 +91,9 @@
       div.className = "tile";
 
       const img = document.createElement("img");
-      img.src = thumb;
-      img.alt = g.title || "GIF";
-
+      img.src = thumb; img.alt = g.title || "GIF";
       div.appendChild(img);
+
       div.onclick = () => {
         const payload = { type: "gif", id: g.id, title: g.title, url: full };
         try { tg.sendData(JSON.stringify(payload)); } catch {}
@@ -113,6 +104,7 @@
     }
   }
 </script>
+
 
 
 </body>
