@@ -33,54 +33,72 @@
   const tg = window.Telegram.WebApp;
   tg.ready(); tg.expand();
 
-  // TODO: paste your key here (OK for now; we can proxy later)
-  const GIPHY_KEY = "PASTE_YOUR_GIPHY_KEY_HERE";
+  // MUST be your real key:
+  const GIPHY_KEY = "YOUR_REAL_KEY";
 
   const qEl = document.getElementById("q");
   const goEl = document.getElementById("go");
   const resEl = document.getElementById("results");
+  const msgEl = document.getElementById("msg");
 
   goEl.addEventListener("click", () => doSearch());
   qEl.addEventListener("keydown", (e) => { if (e.key === "Enter") doSearch(); });
+
+  function showError(text) {
+    msgEl.textContent = text;
+    try { tg.showAlert(text); } catch {}
+  }
 
   async function doSearch() {
     const q = qEl.value.trim();
     if (!q) return;
     resEl.innerHTML = "";
-    const url = `https://api.giphy.com/v1/gifs/search?api_key=${encodeURIComponent(GIPHY_KEY)}&q=${encodeURIComponent(q)}&limit=12&rating=g`;
+    msgEl.textContent = "Searching…";
+
+    const url = `https://api.giphy.com/v1/gifs/search` +
+            `?api_key=${encodeURIComponent(GIPHY_KEY)}` +
+            `&q=${encodeURIComponent(q)}` +
+            `&limit=12&rating=g`;
+
+    let r, j;
     try {
-      const r = await fetch(url);
-      const j = await r.json();
-      render(j.data || []);
+      r = await fetch(url, { method: "GET" });
+      j = await r.json(); // GIPHY always returns JSON
     } catch (e) {
-      resEl.innerHTML = "<p>Failed to load results.</p>";
+      showError("Network/JSON error contacting GIPHY.");
+      return;
     }
+
+    // Surface real API errors
+    if (!r.ok || (j.meta && j.meta.status !== 200)) {
+      showError(`GIPHY error: ${j?.meta?.status || r.status} ${j?.meta?.msg || r.statusText}`);
+      return;
+    }
+
+    const items = Array.isArray(j.data) ? j.data : [];
+    msgEl.textContent = items.length ? "Tip: tap a GIF to send it to chat." : "No results.";
+    render(items);
   }
 
   function render(items) {
     resEl.innerHTML = "";
-    if (!items.length) { resEl.innerHTML = "<p>No results.</p>"; return; }
+    if (!items.length) return;
     for (const g of items) {
       const thumb = g.images.fixed_width_small?.url || g.images.downsized?.url || g.images.original?.url;
       const full  = g.images.downsized?.url || g.images.original?.url;
       const div = document.createElement("div");
       div.className = "tile";
       const img = document.createElement("img");
-      img.src = thumb;
-      div.appendChild(img);
+      img.src = thumb; div.appendChild(img);
       div.onclick = () => {
-        const payload = {
-          type: "gif",
-          id: g.id,
-          title: g.title,
-          url: full,
-        };
-        tg.sendData(JSON.stringify(payload)); // sends to bot
-        tg.close(); // optional: close after selection
+        const payload = { type: "gif", id: g.id, title: g.title, url: full };
+        tg.sendData(JSON.stringify(payload));
+        tg.close();
       };
       resEl.appendChild(div);
     }
   }
 </script>
+
 </body>
 </html>

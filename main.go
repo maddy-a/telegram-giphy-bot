@@ -88,7 +88,7 @@ func main() {
 			})
 			return
 		}
- 
+
 		if update.Message != nil && update.Message.Text == "/app" {
 			if webAppURL == "" {
 				_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
