@@ -9,11 +9,11 @@
         h1{margin:0 0 10px}
         .muted{opacity:.7}
         table{width:100%;border-collapse:collapse;margin-top:10px}
-        th, td { padding:10px; border-bottom:1px solid #e5e5e5; font-size:14px; vertical-align:middle; text-align:center; }
-        td:first-child { text-align:center; } /* username cell */
-        a.user-link{ color:inherit; text-decoration:underline; cursor:pointer; }
+        th,td{padding:10px;border-bottom:1px solid #e5e5e5;font-size:14px;vertical-align:middle;text-align:center}
+        a.user-link{color:inherit;text-decoration:underline;cursor:pointer}
         tr.details td{background:#fafafa}
-        pre{margin:0;padding:12px;border-radius:8px;background:#fff;max-height:360px;overflow:auto;border:1px solid #eee}
+        pre{margin:0;padding:12px;border-radius:8px;background:#fff;max-height:360px;overflow:auto;border:1px solid #eee;text-align:left}
+        button.send-btn{padding:6px 10px;border:1px solid #ccc;border-radius:8px;background:#fff;cursor:pointer}
     </style>
 </head>
 <body>
@@ -25,36 +25,43 @@
         <th style="width:40%">User</th>
         <th style="width:20%">Platform</th>
         <th style="width:20%">Last Update</th>
+        <th style="width:20%">Actions</th>
     </tr>
     </thead>
     <tbody id="rows"></tbody>
 </table>
 
 <script>
-    // Point to your Heroku WS endpoint (admin role)
-    const WS_URL = "wss://telegram-giphy-bot-9a11b0e83d02.herokuapp.com/ws?role=admin";
+    // --- CONFIG ---
+    const WS_URL   = "wss://telegram-giphy-bot-9a11b0e83d02.herokuapp.com/ws?role=admin";
+    const API_BASE = "https://telegram-giphy-bot-9a11b0e83d02.herokuapp.com";
 
-    const state = new Map(); // sessionId -> session object
+    // --- STATE ---
+    const state = new Map(); // sessionId -> {user, client, browser, storage, capabilities, expanded, logs[], ts}
     const rowsEl = document.getElementById('rows');
     const connEl = document.getElementById('conn');
 
+    // --- RENDERING ---
     function usernameFrom(user) {
         if (!user) return "anonymous";
         return user.username || user.first_name || "anonymous";
     }
 
     function mergeSession(cur, msg) {
-        const s = cur || {};
-        // keep last known values; update if present in msg
+        const s = cur || { expanded:false };
         if (msg.sessionId) s.sessionId = msg.sessionId;
-        if (msg.appId) s.appId = msg.appId;
-        if (msg.user) s.user = msg.user;
-        if (msg.client) s.client = msg.client;
-        if (msg.browser) s.browser = msg.browser;
-        if (msg.storage) s.storage = msg.storage;
+        if (msg.appId)     s.appId = msg.appId;
+        if (msg.user)      s.user = msg.user;
+        if (msg.client)    s.client = msg.client;
+        if (msg.browser)   s.browser = msg.browser;
+        if (msg.storage)   s.storage = msg.storage;
         if (msg.capabilities) s.capabilities = msg.capabilities;
         s.ts = msg.ts || Date.now();
         return s;
+    }
+
+    function escapeHtml(str) {
+        return str.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
     }
 
     function render() {
@@ -69,16 +76,16 @@
           <td><a class="user-link" data-sid="${s.sessionId}">${userLabel}</a></td>
           <td>${s.client?.platform || "—"}</td>
           <td>${s.ts ? new Date(s.ts).toLocaleTimeString() : "—"}</td>
+          <td><button class="send-btn" data-sid="${s.sessionId}">Send Task</button></td>
         `;
             rowsEl.appendChild(tr);
 
-            // details row (expanded JSON)
             if (s.expanded) {
                 const det = document.createElement('tr');
                 det.className = "details";
                 const payload = {
                     sessionId: s.sessionId,
-                    appId: s.appId,
+                    appId: s.appId || null,
                     user: s.user || null,
                     client: s.client || null,
                     browser: s.browser || null,
@@ -86,12 +93,15 @@
                     capabilities: s.capabilities || null,
                     ts: s.ts || null
                 };
-                det.innerHTML = `<td colspan="3"><pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre></td>`;
+                const logsHTML = (s.logs && s.logs.length)
+                    ? `<h3 style="margin:12px 0 6px">Recent Events</h3><pre>${escapeHtml(JSON.stringify(s.logs.slice(0,5), null, 2))}</pre>`
+                    : "";
+                det.innerHTML = `<td colspan="4"><pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre>${logsHTML}</td>`;
                 rowsEl.appendChild(det);
             }
         }
 
-        // attach click handlers after DOM paint
+        // attach click/tap handlers
         rowsEl.querySelectorAll('a.user-link').forEach(a => {
             a.onclick = (e) => {
                 const sid = e.currentTarget.getAttribute('data-sid');
@@ -99,22 +109,40 @@
                 if (obj) { obj.expanded = !obj.expanded; render(); }
             };
         });
+
+        rowsEl.querySelectorAll('button.send-btn').forEach(b => {
+            b.onclick = async (e) => {
+                const sid = e.currentTarget.getAttribute('data-sid');
+                const kind = prompt("Task type: cpu or fetch", "cpu");
+                if (!kind) return;
+
+                let payload = {};
+                if (kind === "cpu") {
+                    const n = parseInt(prompt("Count to N", "10000") || "10000", 10);
+                    payload = { n: isNaN(n) ? 10000 : n };
+                } else if (kind === "fetch") {
+                    const u = prompt("URL (allowed: example.com, httpbin.org)", "https://example.com/");
+                    if (!u) return;
+                    payload = { url: u };
+                } else {
+                    alert("Unknown task type"); return;
+                }
+
+                try {
+                    const r = await fetch(`${API_BASE}/tasks`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ sessionId: sid, type: kind, payload })
+                    });
+                    if (!r.ok) { alert("enqueue failed"); return; }
+                    const j = await r.json();
+                    console.log("enqueued", j);
+                } catch { alert("network error"); }
+            };
+        });
     }
 
-    function escapeHtml(str) {
-        return str.replace(/[&<>"]/g, c => (
-            { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]
-        ));
-    }
-
-    function upsertFromEvent(msg) {
-        const sid = msg.sessionId || msg.session || 'unknown';
-        const cur = state.get(sid) || { sessionId: sid, expanded: false };
-        const merged = mergeSession(cur, msg);
-        state.set(sid, merged);
-        render();
-    }
-
+    // --- WS WIRING ---
     let ws;
     function connect() {
         ws = new WebSocket(WS_URL);
@@ -122,9 +150,10 @@
         ws.onclose = () => { connEl.textContent = "disconnected — retrying in 3s"; setTimeout(connect, 3000); };
         ws.onerror = () => { connEl.textContent = "error"; };
         ws.onmessage = (e) => {
-            let msg; try { msg = JSON.parse(e.data); } catch { return; }
+            let msg; try { msg = JSON.parse(e.data) } catch { return }
+
             if (msg.type === 'session_join') {
-                const cur = state.get(msg.sessionId) || { sessionId: msg.sessionId, expanded: false };
+                const cur = state.get(msg.sessionId) || { sessionId: msg.sessionId, expanded:false };
                 state.set(msg.sessionId, mergeSession(cur, msg));
                 render();
                 return;
@@ -133,7 +162,23 @@
                 state.delete(msg.sessionId); render(); return;
             }
             if (msg.type === 'hello' || msg.type === 'snapshot' || msg.type === 'ping') {
-                upsertFromEvent(msg);
+                const sid = msg.sessionId;
+                const cur = state.get(sid) || { sessionId: sid, expanded:false };
+                state.set(sid, mergeSession(cur, msg));
+                render();
+                return;
+            }
+            // --- NEW: task progress / result handlers ---
+            if (msg.type === 'progress' || msg.type === 'result') {
+                const sid = msg.sessionId;
+                const s = state.get(sid);
+                if (s) {
+                    s.ts = msg.ts || Date.now();
+                    s.logs = s.logs || [];
+                    s.logs.unshift({ t: new Date(s.ts).toLocaleTimeString(), payload: msg });
+                    render();
+                }
+                return;
             }
         };
     }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -72,6 +73,12 @@ var (
 	mu         sync.Mutex
 )
 
+func allowCORS(w http.ResponseWriter) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+}
+
 func broadcastToAdmins(v any) {
 	b, _ := json.Marshal(v)
 	mu.Lock()
@@ -106,6 +113,8 @@ func main() {
 
 	http.HandleFunc("/health", handleHealth(appName, configOK))
 	http.HandleFunc("/ws", wsHandler)
+	http.HandleFunc("/proxy", proxyHandler)
+	http.HandleFunc("/tasks", tasksHandler)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -358,4 +367,111 @@ func handleSearch(apiKey, allowedOrigin string) http.HandlerFunc {
 		w.WriteHeader(resp.StatusCode)
 		io.Copy(w, resp.Body) // pass GIPHY JSON straight through
 	}
+}
+
+var proxyAllow = map[string]bool{
+	"example.com": true,
+	"httpbin.org": true,
+}
+
+func proxyHandler(w http.ResponseWriter, r *http.Request) {
+	allowCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	raw := r.URL.Query().Get("url")
+	if raw == "" {
+		http.Error(w, "missing url", http.StatusBadRequest)
+		return
+	}
+
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") {
+		http.Error(w, "bad url", http.StatusBadRequest)
+		return
+	}
+	if !proxyAllow[u.Hostname()] {
+		http.Error(w, "host not allowed", http.StatusForbidden)
+		return
+	}
+
+	req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, u.String(), nil)
+	client := &http.Client{Timeout: 8 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		http.Error(w, "upstream error", http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	// cap body for demo
+	const max = 64 * 1024
+	buf := &bytes.Buffer{}
+	_, _ = io.CopyN(buf, resp.Body, max)
+
+	w.Header().Set("Content-Type", "application/json")
+	allowCORS(w)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status": resp.StatusCode,
+		"size":   buf.Len(),
+		"body":   buf.String(),
+	})
+}
+
+type TaskReq struct {
+	SessionID string         `json:"sessionId"`
+	Type      string         `json:"type"`    // "cpu" or "fetch"
+	Payload   map[string]any `json:"payload"` // e.g., {"n":10000} or {"url":"https://example.com"}
+}
+
+func tasksHandler(w http.ResponseWriter, r *http.Request) {
+	allowCORS(w)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var tr TaskReq
+	if err := json.NewDecoder(r.Body).Decode(&tr); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	if tr.SessionID == "" || tr.Type == "" {
+		http.Error(w, "sessionId/type required", http.StatusBadRequest)
+		return
+	}
+
+	mu.Lock()
+	ac := agentConns[tr.SessionID]
+	mu.Unlock()
+	if ac == nil {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
+	tid := fmt.Sprintf("t-%d", time.Now().UnixNano())
+	msg := map[string]any{
+		"type": "task",
+		"id":   tid,
+		"task": map[string]any{
+			"type":    tr.Type,
+			"payload": tr.Payload,
+		},
+	}
+	if err := ac.Conn.WriteJSON(msg); err != nil {
+		http.Error(w, "send failed", http.StatusBadGateway)
+		return
+	}
+
+	// notify dashboards
+	broadcastToAdmins(map[string]any{"type": "task_enqueued", "sessionId": tr.SessionID, "taskId": tid, "taskType": tr.Type, "ts": time.Now().UnixMilli()})
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "taskId": tid})
 }

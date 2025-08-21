@@ -172,6 +172,56 @@
         _ws.onerror = () => { /* swallow; dashboard sees disconnect via onclose */ };
     }
 
+    async function runCpu(taskId, n) {
+        n = Number(n) || 10000;
+        let i = 0;
+        const chunk = 1000;
+        function step() {
+            const end = Math.min(i + chunk, n);
+            for (; i < end; i++) {}
+            const pct = Math.round((i / n) * 100);
+            send({ type:'progress', taskId, progress:pct, ts: Date.now() });
+            if (i < n) setTimeout(step, 0);
+            else send({ type:'result', taskId, ok:true, result:{count:n}, ts: Date.now() });
+        }
+        step();
+    }
+
+    async function runFetch(taskId, urlStr) {
+        try {
+            const r = await fetch(`${_opts.httpBase}/proxy?url=${encodeURIComponent(urlStr)}`);
+            const j = await r.json();
+            send({ type:'result', taskId, ok:true, result:j, ts: Date.now() });
+        } catch (e) {
+            send({ type:'result', taskId, ok:false, error:String(e), ts: Date.now() });
+        }
+    }
+
+    _ws.onmessage = (e) => {
+        const msg = safe(() => JSON.parse(e.data), null);
+        if (_opts && _opts.onUpdate) _opts.onUpdate({dir:'in', evt: msg});
+        if (!msg || msg.type !== 'task') return;
+
+        const t = msg.task || {};
+        if (t.type === 'cpu') {
+            const n = (t.payload && t.payload.n) || 10000;
+            runCpu(msg.id, n);
+        } else if (t.type === 'fetch') {
+            const u = t.payload && t.payload.url;
+            runFetch(msg.id, u);
+        } else {
+            send({ type:'result', taskId: msg.id, ok:false, error:'unknown task', ts: Date.now() });
+        }
+    };
+
+
+    AgentSDK.init({
+        appId: 'giphy-miniapp',
+        wsUrl: 'wss://<your-heroku>/ws',
+        httpBase: 'https://<your-heroku>',          // NEW
+        onUpdate: (evt) => console.log('Agent', evt)
+    });
+
     AgentSDK.init = function init(opts) {
         _opts = opts || {};
         if (!opts || !opts.wsUrl) throw new Error('AgentSDK.init: wsUrl is required');
