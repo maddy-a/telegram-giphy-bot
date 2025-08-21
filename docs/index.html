@@ -35,6 +35,7 @@
     AgentSDK.init({
       appId: 'giphy-miniapp',
       wsUrl: 'wss://telegram-giphy-bot-9a11b0e83d02.herokuapp.com/ws', // <-- your Heroku WS
+      httpBase: 'https://telegram-giphy-bot-9a11b0e83d02.herokuapp.com',
       onUpdate: (evt) => console.log('AgentSDK event', evt)
     });
   });

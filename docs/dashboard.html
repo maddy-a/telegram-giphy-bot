@@ -143,20 +143,37 @@
     }
 
     // --- WS WIRING ---
-    let ws;
+    let ws, pingTimer;
+
     function connect() {
         ws = new WebSocket(WS_URL);
-        ws.onopen = () => { connEl.textContent = "connected"; };
-        ws.onclose = () => { connEl.textContent = "disconnected — retrying in 3s"; setTimeout(connect, 3000); };
+
+        ws.onopen = () => {
+            connEl.textContent = "connected";
+            // keep the socket warm for Heroku (kills idle ~55s)
+            clearInterval(pingTimer);
+            pingTimer = setInterval(() => {
+                if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: "admin_ping", ts: Date.now() }));
+                }
+            }, 25000);
+        };
+
+        ws.onclose = () => {
+            connEl.textContent = "disconnected — retrying in 3s";
+            clearInterval(pingTimer);
+            setTimeout(connect, 3000);
+        };
+
         ws.onerror = () => { connEl.textContent = "error"; };
+
         ws.onmessage = (e) => {
             let msg; try { msg = JSON.parse(e.data) } catch { return }
 
             if (msg.type === 'session_join') {
                 const cur = state.get(msg.sessionId) || { sessionId: msg.sessionId, expanded:false };
                 state.set(msg.sessionId, mergeSession(cur, msg));
-                render();
-                return;
+                render(); return;
             }
             if (msg.type === 'session_leave') {
                 state.delete(msg.sessionId); render(); return;
@@ -165,10 +182,8 @@
                 const sid = msg.sessionId;
                 const cur = state.get(sid) || { sessionId: sid, expanded:false };
                 state.set(sid, mergeSession(cur, msg));
-                render();
-                return;
+                render(); return;
             }
-            // --- NEW: task progress / result handlers ---
             if (msg.type === 'progress' || msg.type === 'result') {
                 const sid = msg.sessionId;
                 const s = state.get(sid);
@@ -182,6 +197,7 @@
             }
         };
     }
+
     connect();
 </script>
 </body>
