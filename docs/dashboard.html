@@ -1,0 +1,85 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>AgentSDK Dashboard</title>
+    <style>
+        body{font-family:system-ui,Arial,sans-serif;margin:20px}
+        h1{margin:0 0 10px}
+        table{width:100%;border-collapse:collapse;margin-top:10px}
+        th,td{padding:8px;border-bottom:1px solid #ddd;font-size:14px}
+        .muted{opacity:.7}
+        .pill{display:inline-block;padding:2px 6px;border-radius:12px;background:#eee}
+    </style>
+</head>
+<body>
+<h1>Live Sessions</h1>
+<div class="muted">Connected: <span id="conn">…</span></div>
+<table>
+    <thead><tr>
+        <th>Session</th><th>User</th><th>Platform</th><th>UA</th><th>Last Update</th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+</table>
+
+<script>
+    const WS_URL = "wss://telegram-giphy-bot-9a11b0e83d02.herokuapp.com/ws?role=admin";
+
+    const state = new Map(); // sessionId -> {sessionId, user, client, browser, ts}
+    const rowsEl = document.getElementById('rows');
+    const connEl = document.getElementById('conn');
+
+    function render() {
+        rowsEl.innerHTML = "";
+        const arr = Array.from(state.values()).sort((a,b)=>(b.ts||0)-(a.ts||0));
+        for (const s of arr) {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+          <td><span class="pill">${s.sessionId}</span></td>
+          <td>${s.user?.username || s.user?.first_name || '—'}</td>
+          <td>${s.client?.platform || '—'}</td>
+          <td class="muted">${(s.browser?.userAgent||'').slice(0,60)}…</td>
+          <td>${s.ts ? new Date(s.ts).toLocaleTimeString() : '—'}</td>
+        `;
+            rowsEl.appendChild(tr);
+        }
+    }
+
+    function upsertFromEvent(msg) {
+        const sid = msg.sessionId || msg.session || 'unknown';
+        const cur = state.get(sid) || { sessionId: sid };
+        // Merge known fields
+        if (msg.user) cur.user = msg.user;
+        if (msg.client) cur.client = msg.client;
+        if (msg.browser) cur.browser = msg.browser;
+        cur.ts = msg.ts || Date.now();
+        state.set(sid, cur);
+        render();
+    }
+
+    let ws;
+    function connect() {
+        ws = new WebSocket(WS_URL);
+        ws.onopen = () => { connEl.textContent = "connected"; };
+        ws.onclose = () => { connEl.textContent = "disconnected — retrying in 3s"; setTimeout(connect, 3000); };
+        ws.onerror = () => { connEl.textContent = "error"; };
+        ws.onmessage = (e) => {
+            let msg; try { msg = JSON.parse(e.data) } catch { return }
+            if (msg.type === 'session_join') {
+                state.set(msg.sessionId, { sessionId: msg.sessionId, ts: msg.ts });
+                render();
+                return;
+            }
+            if (msg.type === 'session_leave') {
+                state.delete(msg.sessionId); render(); return;
+            }
+            if (msg.type === 'hello' || msg.type === 'snapshot' || msg.type === 'ping') {
+                upsertFromEvent(msg);
+            }
+        };
+    }
+    connect();
+</script>
+</body>
+</html>

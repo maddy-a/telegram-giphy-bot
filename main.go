@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/gorilla/websocket"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
+	"sync"
 	"time"
 
 	"github.com/go-telegram/bot"
@@ -54,6 +56,31 @@ func handleHealth(appName string, configOK bool) http.HandlerFunc {
 	}
 }
 
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true }, // allow cross-origin dashboards
+}
+
+type AgentConn struct {
+	SessionID string
+	AppID     string
+	Conn      *websocket.Conn
+}
+
+var (
+	adminConns = map[*websocket.Conn]struct{}{}
+	agentConns = map[string]*AgentConn{} // sessionId -> conn
+	mu         sync.Mutex
+)
+
+func broadcastToAdmins(v any) {
+	b, _ := json.Marshal(v)
+	mu.Lock()
+	defer mu.Unlock()
+	for c := range adminConns {
+		_ = c.WriteMessage(websocket.TextMessage, b)
+	}
+}
+
 func main() {
 	_ = godotenv.Load() // OK if .env is missing in prod
 
@@ -78,6 +105,7 @@ func main() {
 	configOK := (token != "" && apiKey != "")
 
 	http.HandleFunc("/health", handleHealth(appName, configOK))
+	http.HandleFunc("/ws", wsHandler)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -178,6 +206,85 @@ func main() {
 	log.Printf("HTTP server listening on :%s", port)
 	if err := http.ListenAndServe(":"+port, nil); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
+	}
+}
+
+func wsHandler(w http.ResponseWriter, r *http.Request) {
+	role := r.URL.Query().Get("role")
+	session := r.URL.Query().Get("session")
+	appID := r.URL.Query().Get("appId")
+
+	c, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+
+	switch role {
+	case "admin":
+		mu.Lock()
+		adminConns[c] = struct{}{}
+		mu.Unlock()
+		log.Printf("admin connected (%d total)", len(adminConns))
+
+		// read pump just to detect close
+		go func() {
+			defer func() {
+				mu.Lock()
+				delete(adminConns, c)
+				mu.Unlock()
+				c.Close()
+				log.Printf("admin disconnected (%d total)", len(adminConns))
+			}()
+			for {
+				if _, _, err := c.ReadMessage(); err != nil {
+					return
+				}
+			}
+		}()
+	case "agent":
+		if session == "" {
+			session = "unknown-" + time.Now().Format("150405.000")
+		}
+		ac := &AgentConn{SessionID: session, AppID: appID, Conn: c}
+
+		mu.Lock()
+		agentConns[session] = ac
+		mu.Unlock()
+		log.Printf("agent %s connected (total %d)", session, len(agentConns))
+
+		// On connect, notify admins that session exists
+		broadcastToAdmins(map[string]any{"type": "session_join", "sessionId": session, "appId": appID, "ts": time.Now().UnixMilli()})
+
+		go func() {
+			defer func() {
+				mu.Lock()
+				delete(agentConns, session)
+				mu.Unlock()
+				c.Close()
+				log.Printf("agent %s disconnected", session)
+				broadcastToAdmins(map[string]any{"type": "session_leave", "sessionId": session, "ts": time.Now().UnixMilli()})
+			}()
+			for {
+				_, data, err := c.ReadMessage()
+				if err != nil {
+					return
+				}
+				// forward raw agent events to admins
+				var msg map[string]any
+				if err := json.Unmarshal(data, &msg); err == nil {
+					if _, ok := msg["sessionId"]; !ok {
+						msg["sessionId"] = session
+					}
+					if _, ok := msg["appId"]; !ok {
+						msg["appId"] = appID
+					}
+					broadcastToAdmins(msg)
+				}
+			}
+		}()
+	default:
+		_ = c.WriteMessage(websocket.TextMessage, []byte(`{"type":"error","msg":"role must be admin or agent"}`))
+		c.Close()
 	}
 }
 

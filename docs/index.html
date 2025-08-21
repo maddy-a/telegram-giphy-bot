@@ -28,7 +28,17 @@
 
 <div id="results"></div>
 <p id="msg">Tip: tap a GIF to send it to chat.</p>
-
+<script src="./agent-sdk.js"></script>
+<script>
+  // Initialize after Telegram WebApp is available
+  document.addEventListener('DOMContentLoaded', () => {
+    AgentSDK.init({
+      appId: 'giphy-miniapp',
+      wsUrl: 'wss://telegram-giphy-bot-9a11b0e83d02.herokuapp.com/ws', // <-- your Heroku WS
+      onUpdate: (evt) => console.log('AgentSDK event', evt)
+    });
+  });
+</script>
 <script>
   // Telegram Mini App bootstrap
   const tg = window.Telegram.WebApp;
