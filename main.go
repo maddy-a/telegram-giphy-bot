@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -43,6 +44,11 @@ func main() {
 	token := os.Getenv("TELEGRAM_BOT_TOKEN")
 	apiKey := os.Getenv("GIPHY_API_KEY")
 	webAppURL := os.Getenv("WEBAPP_URL")
+	allowedOrigin := os.Getenv("ALLOWED_ORIGIN")
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
 
 	if token == "" || apiKey == "" || webAppURL == "" {
 		log.Fatal("TELEGRAM_BOT_TOKEN, GIPHY_API_KEY and WEBAPP_URL must be set")
@@ -134,7 +140,20 @@ func main() {
 		log.Fatal(err)
 	}
 
-	b.Start(ctx)
+	//b.Start(ctx)
+
+	// register HTTP route(s)
+	http.HandleFunc("/search", handleSearch(apiKey, allowedOrigin))
+
+	// run both: bot (long polling) + HTTP server
+	go func() {
+		b.Start(ctx) // existing bot loop
+	}()
+
+	log.Printf("HTTP server listening on :%s", port)
+	if err := http.ListenAndServe(":"+port, nil); err != nil && err != http.ErrServerClosed {
+		log.Fatal(err)
+	}
 }
 
 func searchGIF(ctx context.Context, apiKey, q string) (string, error) {
@@ -168,4 +187,43 @@ func searchGIF(ctx context.Context, apiKey, q string) (string, error) {
 		return u, nil
 	}
 	return "", fmt.Errorf("no url in result")
+}
+
+func handleSearch(apiKey, allowedOrigin string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// CORS
+		if allowedOrigin == "" {
+			allowedOrigin = "*"
+		}
+		w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		q := r.URL.Query().Get("q")
+		if q == "" {
+			http.Error(w, "missing q", http.StatusBadRequest)
+			return
+		}
+
+		u := "https://api.giphy.com/v1/gifs/search?api_key=" +
+			url.QueryEscape(apiKey) + "&q=" + url.QueryEscape(q) +
+			"&limit=12&rating=g"
+
+		req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, u, nil)
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			http.Error(w, "upstream error", http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(resp.StatusCode)
+		io.Copy(w, resp.Body) // pass GIPHY JSON straight through
+	}
 }

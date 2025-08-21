@@ -30,75 +30,90 @@
 <p id="msg">Tip: tap a GIF to send it to chat.</p>
 
 <script>
+  // Telegram Mini App bootstrap
   const tg = window.Telegram.WebApp;
-  tg.ready(); tg.expand();
+  tg.ready();
+  tg.expand();
 
-  // MUST be your real key:
-  const GIPHY_KEY = "YOUR_REAL_KEY";
+  // Point this to your HTTPS proxy (ngrok or your host)
+  // Example: "https://abc123.ngrok.io"
+  const API_BASE = "https://6ac3635cfddd.ngrok-free.app";
 
-  const qEl = document.getElementById("q");
-  const goEl = document.getElementById("go");
+  // UI elements
+  const qEl   = document.getElementById("q");
+  const goEl  = document.getElementById("go");
   const resEl = document.getElementById("results");
   const msgEl = document.getElementById("msg");
 
-  goEl.addEventListener("click", () => doSearch());
+  goEl.addEventListener("click", doSearch);
   qEl.addEventListener("keydown", (e) => { if (e.key === "Enter") doSearch(); });
 
-  function showError(text) {
+  function showMsg(text) {
     msgEl.textContent = text;
-    try { tg.showAlert(text); } catch {}
   }
 
   async function doSearch() {
     const q = qEl.value.trim();
     if (!q) return;
-    resEl.innerHTML = "";
-    msgEl.textContent = "Searching…";
 
-    const url = `https://api.giphy.com/v1/gifs/search` +
-            `?api_key=${encodeURIComponent(GIPHY_API_KEY)}` +
-            `&q=${encodeURIComponent(q)}` +
-            `&limit=12&rating=g`;
+    resEl.innerHTML = "";
+    showMsg("Searching…");
+
+    const url = `${API_BASE}/search?q=${encodeURIComponent(q)}`;
 
     let r, j;
     try {
       r = await fetch(url, { method: "GET" });
-      j = await r.json(); // GIPHY always returns JSON
-    } catch (e) {
-      showError("Network/JSON error contacting GIPHY.");
+      j = await r.json();
+    } catch {
+      showMsg("Network error.");
+      try { tg.showAlert("Network error contacting API."); } catch {}
       return;
     }
 
-    // Surface real API errors
     if (!r.ok || (j.meta && j.meta.status !== 200)) {
-      showError(`GIPHY error: ${j?.meta?.status || r.status} ${j?.meta?.msg || r.statusText}`);
+      const status = j?.meta?.status || r.status;
+      const msg    = j?.meta?.msg || r.statusText || "API error";
+      showMsg(`API error: ${status} ${msg}`);
+      try { tg.showAlert(`API error: ${status} ${msg}`); } catch {}
       return;
     }
 
     const items = Array.isArray(j.data) ? j.data : [];
-    msgEl.textContent = items.length ? "Tip: tap a GIF to send it to chat." : "No results.";
+    showMsg(items.length ? "Tip: tap a GIF to send it to chat." : "No results.");
     render(items);
   }
 
   function render(items) {
     resEl.innerHTML = "";
     if (!items.length) return;
+
     for (const g of items) {
-      const thumb = g.images.fixed_width_small?.url || g.images.downsized?.url || g.images.original?.url;
-      const full  = g.images.downsized?.url || g.images.original?.url;
+      const thumb = g.images?.fixed_width_small?.url
+              || g.images?.downsized?.url
+              || g.images?.original?.url;
+      const full  = g.images?.downsized?.url
+              || g.images?.original?.url;
+
       const div = document.createElement("div");
       div.className = "tile";
+
       const img = document.createElement("img");
-      img.src = thumb; div.appendChild(img);
+      img.src = thumb;
+      img.alt = g.title || "GIF";
+
+      div.appendChild(img);
       div.onclick = () => {
         const payload = { type: "gif", id: g.id, title: g.title, url: full };
-        tg.sendData(JSON.stringify(payload));
-        tg.close();
+        try { tg.sendData(JSON.stringify(payload)); } catch {}
+        tg.close(); // optional: close after selection
       };
+
       resEl.appendChild(div);
     }
   }
 </script>
+
 
 </body>
 </html>
