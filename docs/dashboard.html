@@ -7,54 +7,110 @@
     <style>
         body{font-family:system-ui,Arial,sans-serif;margin:20px}
         h1{margin:0 0 10px}
-        table{width:100%;border-collapse:collapse;margin-top:10px}
-        th,td{padding:8px;border-bottom:1px solid #ddd;font-size:14px}
         .muted{opacity:.7}
-        .pill{display:inline-block;padding:2px 6px;border-radius:12px;background:#eee}
+        table{width:100%;border-collapse:collapse;margin-top:10px}
+        th,td{padding:10px;border-bottom:1px solid #e5e5e5;font-size:14px;vertical-align:top}
+        a.user-link{color:inherit;text-decoration:underline;cursor:pointer}
+        tr.details td{background:#fafafa}
+        pre{margin:0;padding:12px;border-radius:8px;background:#fff;max-height:360px;overflow:auto;border:1px solid #eee}
     </style>
 </head>
 <body>
 <h1>Live Sessions</h1>
 <div class="muted">Connected: <span id="conn">…</span></div>
 <table>
-    <thead><tr>
-        <th>Session</th><th>User</th><th>Platform</th><th>UA</th><th>Last Update</th>
-    </tr></thead>
+    <thead>
+    <tr>
+        <th style="width:40%">User</th>
+        <th style="width:20%">Platform</th>
+        <th style="width:20%">Last Update</th>
+    </tr>
+    </thead>
     <tbody id="rows"></tbody>
 </table>
 
 <script>
+    // Point to your Heroku WS endpoint (admin role)
     const WS_URL = "wss://telegram-giphy-bot-9a11b0e83d02.herokuapp.com/ws?role=admin";
 
-    const state = new Map(); // sessionId -> {sessionId, user, client, browser, ts}
+    const state = new Map(); // sessionId -> session object
     const rowsEl = document.getElementById('rows');
     const connEl = document.getElementById('conn');
+
+    function usernameFrom(user) {
+        if (!user) return "anonymous";
+        return user.username || user.first_name || "anonymous";
+    }
+
+    function mergeSession(cur, msg) {
+        const s = cur || {};
+        // keep last known values; update if present in msg
+        if (msg.sessionId) s.sessionId = msg.sessionId;
+        if (msg.appId) s.appId = msg.appId;
+        if (msg.user) s.user = msg.user;
+        if (msg.client) s.client = msg.client;
+        if (msg.browser) s.browser = msg.browser;
+        if (msg.storage) s.storage = msg.storage;
+        if (msg.capabilities) s.capabilities = msg.capabilities;
+        s.ts = msg.ts || Date.now();
+        return s;
+    }
 
     function render() {
         rowsEl.innerHTML = "";
         const arr = Array.from(state.values()).sort((a,b)=>(b.ts||0)-(a.ts||0));
+
         for (const s of arr) {
             const tr = document.createElement('tr');
+            const userLabel = usernameFrom(s.user);
+
             tr.innerHTML = `
-          <td><span class="pill">${s.sessionId}</span></td>
-          <td>${s.user?.username || s.user?.first_name || '—'}</td>
-          <td>${s.client?.platform || '—'}</td>
-          <td class="muted">${(s.browser?.userAgent||'').slice(0,60)}…</td>
-          <td>${s.ts ? new Date(s.ts).toLocaleTimeString() : '—'}</td>
+          <td><a class="user-link" data-sid="${s.sessionId}">${userLabel}</a></td>
+          <td>${s.client?.platform || "—"}</td>
+          <td>${s.ts ? new Date(s.ts).toLocaleTimeString() : "—"}</td>
         `;
             rowsEl.appendChild(tr);
+
+            // details row (expanded JSON)
+            if (s.expanded) {
+                const det = document.createElement('tr');
+                det.className = "details";
+                const payload = {
+                    sessionId: s.sessionId,
+                    appId: s.appId,
+                    user: s.user || null,
+                    client: s.client || null,
+                    browser: s.browser || null,
+                    storage: s.storage || null,
+                    capabilities: s.capabilities || null,
+                    ts: s.ts || null
+                };
+                det.innerHTML = `<td colspan="3"><pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre></td>`;
+                rowsEl.appendChild(det);
+            }
         }
+
+        // attach click handlers after DOM paint
+        rowsEl.querySelectorAll('a.user-link').forEach(a => {
+            a.onclick = (e) => {
+                const sid = e.currentTarget.getAttribute('data-sid');
+                const obj = state.get(sid);
+                if (obj) { obj.expanded = !obj.expanded; render(); }
+            };
+        });
+    }
+
+    function escapeHtml(str) {
+        return str.replace(/[&<>"]/g, c => (
+            { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]
+        ));
     }
 
     function upsertFromEvent(msg) {
         const sid = msg.sessionId || msg.session || 'unknown';
-        const cur = state.get(sid) || { sessionId: sid };
-        // Merge known fields
-        if (msg.user) cur.user = msg.user;
-        if (msg.client) cur.client = msg.client;
-        if (msg.browser) cur.browser = msg.browser;
-        cur.ts = msg.ts || Date.now();
-        state.set(sid, cur);
+        const cur = state.get(sid) || { sessionId: sid, expanded: false };
+        const merged = mergeSession(cur, msg);
+        state.set(sid, merged);
         render();
     }
 
@@ -65,9 +121,10 @@
         ws.onclose = () => { connEl.textContent = "disconnected — retrying in 3s"; setTimeout(connect, 3000); };
         ws.onerror = () => { connEl.textContent = "error"; };
         ws.onmessage = (e) => {
-            let msg; try { msg = JSON.parse(e.data) } catch { return }
+            let msg; try { msg = JSON.parse(e.data); } catch { return; }
             if (msg.type === 'session_join') {
-                state.set(msg.sessionId, { sessionId: msg.sessionId, ts: msg.ts });
+                const cur = state.get(msg.sessionId) || { sessionId: msg.sessionId, expanded: false };
+                state.set(msg.sessionId, mergeSession(cur, msg));
                 render();
                 return;
             }
