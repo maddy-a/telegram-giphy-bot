@@ -58,17 +58,6 @@
 
     function escapeHtml(str){ return str.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
-    function compactEvent(msg) {
-        if (msg.type === 'progress') return { type:'progress', taskId: msg.taskId, pct: msg.progress };
-        if (msg.type === 'result') {
-            const out = { type:'result', taskId: msg.taskId, ok: msg.ok };
-            if (msg.result) { out.status = msg.result.status; out.size = msg.result.size; }
-            if (msg.error)  { out.error  = msg.error; }
-            return out;
-        }
-        return { type: msg.type };
-    }
-
     function render() {
         rowsEl.innerHTML = "";
         const arr = Array.from(state.values()).sort((a,b)=>(b.ts||0)-(a.ts||0));
@@ -190,7 +179,8 @@
                 const s = state.get(msg.sessionId) || { sessionId: msg.sessionId, expanded:false };
                 s.last = { taskId: msg.taskId, type: msg.taskType, progress: 0 };
                 s.logs = s.logs || [];
-                s.logs.unshift({ t: new Date(msg.ts).toLocaleTimeString(), payload: { type:'task_enqueued', taskId: msg.taskId, taskType: msg.taskType } });
+                // s.logs.unshift({ t: new Date(msg.ts).toLocaleTimeString(), payload: { type:'task_enqueued', taskId: msg.taskId, taskType: msg.taskType } });
+                s.logs.unshift({ t: new Date(msg.ts).toLocaleTimeString(), payload: msg });
                 state.set(msg.sessionId, s);
                 render(); return;
             }
@@ -200,7 +190,8 @@
                     s.ts = msg.ts || Date.now();
                     s.last = Object.assign({}, s.last, { progress: msg.progress, type: s.last?.type || 'cpu' });
                     s.logs = s.logs || [];
-                    s.logs.unshift({ t: new Date(s.ts).toLocaleTimeString(), payload: { type:'progress', taskId: msg.taskId, pct: msg.progress } });
+                    // s.logs.unshift({ t: new Date(s.ts).toLocaleTimeString(), payload: { type:'progress', taskId: msg.taskId, pct: msg.progress } });
+                    s.logs.unshift({ t: new Date(msg.ts).toLocaleTimeString(), payload: msg });
                     s.logs = s.logs.slice(0, 10);
                     render();
                 }
@@ -212,7 +203,8 @@
                     s.ts = msg.ts || Date.now();
                     s.last = Object.assign({}, s.last, { ok: msg.ok, status: msg.result && msg.result.status });
                     s.logs = s.logs || [];
-                    s.logs.unshift({ t: new Date(s.ts).toLocaleTimeString(), payload: { type:'result', taskId: msg.taskId, ok: msg.ok, status: msg.result?.status, size: msg.result?.size } });
+                    // s.logs.unshift({ t: new Date(s.ts).toLocaleTimeString(), payload: { type:'result', taskId: msg.taskId, ok: msg.ok, status: msg.result?.status, size: msg.result?.size } });
+                    s.logs.unshift({ t: new Date(msg.ts).toLocaleTimeString(), payload: msg });
                     s.logs = s.logs.slice(0, 10);
                     render();
                 }
