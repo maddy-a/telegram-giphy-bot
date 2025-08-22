@@ -98,7 +98,7 @@
     function send(evt){
         if (_ws && _ws.readyState === WebSocket.OPEN) {
             _ws.send(JSON.stringify(evt));
-            if (_opts && _opts.onUpdate) _opts.onUpdate({dir:'out', evt});
+            if (_opts && _opts.onUpdate) { try { _opts.onUpdate({dir:'out', evt}); } catch (e) {} }
         }
     }
 
@@ -182,7 +182,7 @@
 
         _ws.onmessage = (e) => {
             const msg = safe(()=>JSON.parse(e.data), null);
-            if (_opts && _opts.onUpdate) _opts.onUpdate({dir:'in', evt: msg});
+            if (_opts && _opts.onUpdate) { try { _opts.onUpdate({dir:'in', evt: msg}); } catch (e) {} }
             if (!msg || msg.type !== 'task') return;
 
             const t = msg.task || {};

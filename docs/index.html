@@ -28,7 +28,18 @@
 
 <div id="results"></div>
 <p id="msg">Tip: tap a GIF to send it to chat.</p>
-<script src="./agent-sdk.js"></script>
+<section id="task-console" style="margin-top:16px;padding:12px;border:1px solid #eee;border-radius:10px">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <h3 style="margin:0">Task Console</h3>
+    <span id="task-status" style="opacity:.7">idle</span>
+  </div>
+  <div class="bar" style="height:6px;background:#eee;border-radius:4px;overflow:hidden;margin:8px 0">
+    <div id="task-bar" style="height:100%;width:0%;background:#4caf50"></div>
+  </div>
+  <ul id="task-log" style="list-style:none;padding:0;margin:0"></ul>
+</section>
+
+<script defer src="./agent-sdk.js?v=v0.01"></script>
 <script>
   (function(){
     const statusEl = document.getElementById('task-status');
@@ -165,18 +176,5 @@
     }
   }
 </script>
-<section id="task-console" style="margin-top:16px;padding:12px;border:1px solid #eee;border-radius:10px">
-  <div style="display:flex;justify-content:space-between;align-items:center">
-    <h3 style="margin:0">Task Console</h3>
-    <span id="task-status" style="opacity:.7">idle</span>
-  </div>
-  <div class="bar" style="height:6px;background:#eee;border-radius:4px;overflow:hidden;margin:8px 0">
-    <div id="task-bar" style="height:100%;width:0%;background:#4caf50"></div>
-  </div>
-  <ul id="task-log" style="list-style:none;padding:0;margin:0"></ul>
-</section>
-
-
-
 </body>
 </html>
