@@ -39,66 +39,59 @@
   <ul id="task-log" style="list-style:none;padding:0;margin:0"></ul>
 </section>
 
-<script defer src="./agent-sdk.js?v=v0.01"></script>
+<script defer src="./agent-sdk.js?v=v0.02"></script>
 <script>
-  (function(){
+  window.addEventListener('DOMContentLoaded', () => {
     const statusEl = document.getElementById('task-status');
     const barEl    = document.getElementById('task-bar');
     const logEl    = document.getElementById('task-log');
 
-    function setStatus(txt){ statusEl.textContent = txt; }
+    function setStatus(txt){ if (statusEl) statusEl.textContent = txt; }
     function logLine(txt){
+      if (!logEl) return;
       const li = document.createElement('li');
       li.textContent = txt;
       logEl.prepend(li);
       while (logEl.children.length > 12) logEl.removeChild(logEl.lastChild);
     }
 
-    // simple throttle so we don't spam the console on CPU tasks
     let lastPctLogged = -1;
 
-    AgentSDK.init({
-      appId:  'giphy-miniapp',
-      wsUrl:  'wss://telegram-giphy-bot-9a11b0e83d02.herokuapp.com/ws',
-      httpBase: 'https://telegram-giphy-bot-9a11b0e83d02.herokuapp.com',
-      onUpdate: ({dir, evt}) => {
-        if (!evt) return;
-
-        // Server -> Agent: task arrive
-        if (evt.type === 'task') {
-          const where = evt.task?.payload?.where || 'auto';
-          setStatus(`running ${evt.task.type} (${where})`);
-          barEl.style.width = '0%';
-          lastPctLogged = -1;
-          logLine(`[in] task ${evt.task.type}#${evt.id} where=${where}`);
-          return;
-        }
-
-        // Agent -> Server: progress (CPU)
-        if (evt.type === 'progress') {
-          const p = Math.max(0, Math.min(100, Number(evt.progress)||0));
-          barEl.style.width = p + '%';
-          setStatus(`progress ${p}%`);
-          // log every 10% only
-          if (p >= 0 && Math.floor(p/10) !== Math.floor((lastPctLogged<0? -1:lastPctLogged)/10)) {
-            logLine(`[out] progress ${p}% task=${evt.taskId}`);
-            lastPctLogged = p;
+    // --- Safe init after agent-sdk.js is loaded ---
+    try {
+      AgentSDK.init({
+        appId:  'giphy-miniapp',
+        wsUrl:  'wss://telegram-giphy-bot-9a11b0e83d02.herokuapp.com/ws',
+        httpBase: 'https://telegram-giphy-bot-9a11b0e83d02.herokuapp.com',
+        onUpdate: ({evt}) => {
+          if (!evt) return;
+          if (evt.type === 'task') {
+            const where = evt.task?.payload?.where || 'auto';
+            setStatus(`running ${evt.task.type} (${where})`);
+            if (barEl) barEl.style.width = '0%';
+            lastPctLogged = -1;
+            logLine(`[in] task ${evt.task.type}#${evt.id} where=${where}`);
+          } else if (evt.type === 'progress') {
+            const p = Math.max(0, Math.min(100, Number(evt.progress)||0));
+            if (barEl) barEl.style.width = p + '%';
+            setStatus(`progress ${p}%`);
+            if (p >= 0 && Math.floor(p/10) !== Math.floor((lastPctLogged<0? -1:lastPctLogged)/10)) {
+              logLine(`[out] progress ${p}% task=${evt.taskId}`);
+              lastPctLogged = p;
+            }
+          } else if (evt.type === 'result') {
+            const where = evt.result?.cors || 'client';
+            const status = evt.result?.status ?? '';
+            if (barEl) barEl.style.width = '100%';
+            setStatus('idle');
+            logLine(`[out] result ok=${evt.ok} where=${where}${status ? ' status='+status : ''} task=${evt.taskId}`);
           }
-          return;
         }
-
-        // Agent -> Server: result (CPU/Fetch)
-        if (evt.type === 'result') {
-          const where = evt.result?.cors || 'client';
-          const status = evt.result?.status ?? '';
-          barEl.style.width = '100%';
-          setStatus('idle');
-          logLine(`[out] result ok=${evt.ok} where=${where}${status ? ' status='+status : ''} task=${evt.taskId}`);
-          return;
-        }
-      }
-    });
-  })();
+      });
+    } catch (e) {
+      console.error('AgentSDK.init failed', e);
+    }
+  });
 </script>
 
 <script>
