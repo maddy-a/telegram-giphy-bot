@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"time"
 
@@ -130,13 +132,76 @@ func allowCORS(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 }
 
-var proxyAllow = map[string]bool{
-	"example.com":     true,
-	"www.example.com": true,
-	"httpbin.org":     true,
-	"www.httpbin.org": true,
-	"dappier.com":     true,
-	"www.dappier.com": true,
+//var proxyAllow = map[string]bool{
+//	"example.com":     true,
+//	"www.example.com": true,
+//	"httpbin.org":     true,
+//	"www.httpbin.org": true,
+//	"dappier.com":     true,
+//	"www.dappier.com": true,
+//}
+
+// CIDR blocks we will NEVER allow (SSRF guard)
+var blockedCIDRs []*net.IPNet
+
+func init() {
+	cidrs := []string{
+		// IPv4
+		"127.0.0.0/8",    // loopback
+		"10.0.0.0/8",     // RFC1918
+		"172.16.0.0/12",  // RFC1918
+		"192.168.0.0/16", // RFC1918
+		"169.254.0.0/16", // link-local
+		"100.64.0.0/10",  // carrier-grade NAT
+		"0.0.0.0/8",      // "this" network
+		"224.0.0.0/4",    // multicast
+		"240.0.0.0/4",    // reserved
+		// IPv6
+		"::1/128",   // loopback
+		"fe80::/10", // link-local
+		"fc00::/7",  // unique local
+		"ff00::/8",  // multicast
+		"::/128",    // unspecified
+	}
+	for _, c := range cidrs {
+		_, n, _ := net.ParseCIDR(c)
+		blockedCIDRs = append(blockedCIDRs, n)
+	}
+}
+
+func ipBlocked(ip net.IP) bool {
+	if ip == nil || ip.IsUnspecified() {
+		return true
+	}
+	for _, n := range blockedCIDRs {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// Resolve host and ensure ALL answers are public routable
+func checkHostSafe(ctx context.Context, host string) error {
+	if ip := net.ParseIP(host); ip != nil {
+		if ipBlocked(ip) {
+			return fmt.Errorf("blocked ip %s", ip.String())
+		}
+		return nil
+	}
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		return err
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("no A/AAAA records")
+	}
+	for _, ip := range ips {
+		if ipBlocked(ip) {
+			return fmt.Errorf("blocked resolved ip %s", ip.String())
+		}
+	}
+	return nil
 }
 
 func proxyHandler(w http.ResponseWriter, r *http.Request) {
@@ -146,31 +211,64 @@ func proxyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	raw := r.URL.Query().Get("url")
+	raw := strings.TrimSpace(r.URL.Query().Get("url"))
 	if raw == "" {
 		http.Error(w, "missing url", http.StatusBadRequest)
 		return
 	}
 	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") {
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
 		http.Error(w, "bad url", http.StatusBadRequest)
 		return
 	}
-	if !proxyAllow[u.Hostname()] {
-		http.Error(w, "host not allowed", http.StatusForbidden)
+
+	if err := checkHostSafe(r.Context(), u.Hostname()); err != nil {
+		http.Error(w, "unsafe host: "+err.Error(), http.StatusForbidden)
 		return
 	}
 
+	// Transport that re-checks the final dial target (guards DNS rebinding)
+	tr := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			host, _, err := net.SplitHostPort(address)
+			if err != nil {
+				return nil, err
+			}
+			if err := checkHostSafe(ctx, host); err != nil {
+				return nil, err
+			}
+			d := &net.Dialer{Timeout: 8 * time.Second}
+			return d.DialContext(ctx, network, address)
+		},
+		TLSHandshakeTimeout: 8 * time.Second,
+	}
+
+	// 5 redirects max, validate each hop
+	client := &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: tr,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return fmt.Errorf("too many redirects")
+			}
+			if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
+				return fmt.Errorf("bad scheme")
+			}
+			return checkHostSafe(req.Context(), req.URL.Hostname())
+		},
+	}
+
 	req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, u.String(), nil)
-	client := &http.Client{Timeout: 8 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		http.Error(w, "upstream error", http.StatusBadGateway)
+		http.Error(w, "upstream error: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 
-	const max = 64 * 1024
+	// Cap body
+	const max = 128 * 1024
 	buf := &bytes.Buffer{}
 	_, _ = io.CopyN(buf, resp.Body, max)
 

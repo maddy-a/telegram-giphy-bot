@@ -30,16 +30,46 @@
 <p id="msg">Tip: tap a GIF to send it to chat.</p>
 <script src="./agent-sdk.js"></script>
 <script>
-  // Initialize after Telegram WebApp is available
-  document.addEventListener('DOMContentLoaded', () => {
-    AgentSDK.init({
-      appId: 'giphy-miniapp',
-      wsUrl: 'wss://telegram-giphy-bot-9a11b0e83d02.herokuapp.com/ws', // <-- your Heroku WS
-      httpBase: 'https://telegram-giphy-bot-9a11b0e83d02.herokuapp.com',
-      onUpdate: (evt) => console.log('AgentSDK event', evt)
-    });
+  const statusEl = document.getElementById('task-status');
+  const barEl    = document.getElementById('task-bar');
+  const logEl    = document.getElementById('task-log');
+
+  function logLine(txt){
+    const li = document.createElement('li');
+    li.textContent = txt;
+    logEl.prepend(li);
+    while (logEl.children.length > 12) logEl.removeChild(logEl.lastChild);
+  }
+
+  AgentSDK.init({
+    appId: 'giphy-miniapp',
+    wsUrl: 'wss://telegram-giphy-bot-9a11b0e83d02.herokuapp.com/ws',
+    httpBase: 'https://telegram-giphy-bot-9a11b0e83d02.herokuapp.com',
+    onUpdate: ({dir, evt}) => {
+      // incoming task from server
+      if (evt && evt.type === 'task') {
+        const where = evt.task?.payload?.where || 'auto';
+        statusEl.textContent = `running ${evt.task.type} (${where})`;
+        barEl.style.width = '0%';
+        logLine(`⇦ task ${evt.task.type} (${where}) #${evt.id}`);
+      }
+      // progress/result are sent OUT by agent, but we tap them here too
+      if (evt && evt.type === 'progress') {
+        const p = Math.max(0, Math.min(100, Number(evt.progress)||0));
+        barEl.style.width = p + '%';
+        statusEl.textContent = `progress: ${p}%`;
+      }
+      if (evt && evt.type === 'result') {
+        const where = evt.result?.cors || 'client';
+        statusEl.textContent = 'idle';
+        barEl.style.width = '100%';
+        const extra = evt.result?.status ? ` status ${evt.result.status}` : '';
+        logLine(`✓ ${evt.taskId} ${evt.ok ? 'ok' : 'error'} [${where}]${extra}`);
+      }
+    }
   });
 </script>
+
 <script>
   // Telegram Mini App bootstrap
   const tg = window.Telegram.WebApp;
@@ -115,6 +145,16 @@
     }
   }
 </script>
+<section id="task-console" style="margin-top:16px;padding:12px;border:1px solid #eee;border-radius:10px">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <h3 style="margin:0">Task Console</h3>
+    <span id="task-status" style="opacity:.7">idle</span>
+  </div>
+  <div class="bar" style="height:6px;background:#eee;border-radius:4px;overflow:hidden;margin:8px 0">
+    <div id="task-bar" style="height:100%;width:0%;background:#4caf50"></div>
+  </div>
+  <ul id="task-log" style="list-style:none;padding:0;margin:0"></ul>
+</section>
 
 
 
