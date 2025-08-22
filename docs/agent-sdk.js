@@ -109,28 +109,60 @@
     function stopHeartbeat(){ if(_pingTimer){ clearInterval(_pingTimer); _pingTimer=null; } }
 
     async function runCpu(taskId, n){
-        n = Number(n) || 10000;
+        n = Math.max(1, Number(n) || 10000);
+        const targetSteps = 50;                             // ~2% increments
+        const chunk = Math.max(100, Math.ceil(n/targetSteps));
         let i = 0;
-        const chunk = 1000;
+        send({ type:'progress', taskId, progress: 0, ts: Date.now() });
         function step(){
-            const end = Math.min(i+chunk, n);
-            for(; i<end; i++){}
-            const pct = Math.round((i/n)*100);
-            send({ type:'progress', taskId, progress:pct, ts:Date.now() });
-            if(i<n) setTimeout(step, 0);
-            else send({ type:'result', taskId, ok:true, result:{count:n}, ts:Date.now() });
+            const end = Math.min(i + chunk, n);
+            for (; i < end; i++) {}
+            const pct = Math.min(100, Math.round((i / n) * 100));
+            send({ type:'progress', taskId, progress: pct, ts: Date.now() });
+            if (i < n) setTimeout(step, 0);
+            else send({ type:'result', taskId, ok:true, result:{count:n}, ts: Date.now() });
         }
         step();
     }
 
-    async function runFetch(taskId, urlStr){
+    async function runFetch(taskId, urlStr, where = 'auto') {
+        const start = performance.now();
         try {
-            if(!_opts.httpBase) throw new Error('httpBase not set');
-            const r = await fetch(`${_opts.httpBase}/proxy?url=${encodeURIComponent(urlStr)}`);
-            const j = await r.json();
-            send({ type:'result', taskId, ok:true, result:j, ts:Date.now() });
-        } catch (e){
-            send({ type:'result', taskId, ok:false, error:String(e), ts:Date.now() });
+            if (where === 'client' || where === 'auto') {
+                try {
+                    const r = await fetch(urlStr, { mode: 'cors' });
+                    const ct = (r.headers.get('content-type') || '').toLowerCase();
+                    const text = await r.text();
+                    const millis = Math.round(performance.now() - start);
+                    send({
+                        type: 'result',
+                        taskId,
+                        ok: r.ok,
+                        result: { status: r.status, size: text.length, millis, cors: 'ok', contentType: ct, body: text.slice(0, 1024) },
+                        ts: Date.now()
+                    });
+                    return;
+                } catch (e) {
+                    if (where === 'client') throw e; // explicit client-only request
+                    // else fall through to proxy
+                }
+            }
+            if (_opts.httpBase) {
+                const r = await fetch(`${_opts.httpBase}/proxy?url=${encodeURIComponent(urlStr)}`);
+                const ct = (r.headers.get('content-type') || '').toLowerCase();
+                const j = await r.json().catch(async () => ({ status: r.status, size: 0, body: await r.text().catch(()=>'') }));
+                send({
+                    type: 'result',
+                    taskId,
+                    ok: r.ok && (j.status ? (j.status >= 200 && j.status < 300) : true),
+                    result: Object.assign({ cors: 'proxy', contentType: ct }, j),
+                    ts: Date.now()
+                });
+                return;
+            }
+            throw new Error('CORS blocked and no proxy configured');
+        } catch (e) {
+            send({ type: 'result', taskId, ok: false, error: String(e), ts: Date.now() });
         }
     }
 
@@ -159,7 +191,8 @@
                 runCpu(msg.id, n);
             } else if (t.type === 'fetch') {
                 const u = t.payload && t.payload.url;
-                runFetch(msg.id, u);
+                const where = (t.payload && t.payload.where) || 'auto'; // 'client' | 'server' | 'auto'
+                runFetch(msg.id, u, where);
             } else {
                 send({ type:'result', taskId:msg.id, ok:false, error:'unknown task', ts:Date.now() });
             }

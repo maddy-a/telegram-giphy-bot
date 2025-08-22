@@ -14,6 +14,8 @@
         tr.details td{background:#fafafa}
         pre{margin:0;padding:12px;border-radius:8px;background:#fff;max-height:360px;overflow:auto;border:1px solid #eee;text-align:left}
         button.send-btn{padding:6px 10px;border:1px solid #ccc;border-radius:8px;background:#fff;cursor:pointer}
+        .bar{height:6px;background:#eee;border-radius:4px;overflow:hidden;margin-top:6px}
+        .bar > div{height:100%;width:0%;background:#4caf50}
     </style>
 </head>
 <body>
@@ -32,20 +34,14 @@
 </table>
 
 <script>
-    // --- CONFIG ---
     const WS_URL   = "wss://telegram-giphy-bot-9a11b0e83d02.herokuapp.com/ws?role=admin";
     const API_BASE = "https://telegram-giphy-bot-9a11b0e83d02.herokuapp.com";
 
-    // --- STATE ---
-    const state = new Map(); // sessionId -> {user, client, browser, storage, capabilities, expanded, logs[], ts}
+    const state = new Map(); // sessionId -> {user, client, browser, storage, capabilities, expanded, logs[], last, ts}
     const rowsEl = document.getElementById('rows');
     const connEl = document.getElementById('conn');
 
-    // --- RENDERING ---
-    function usernameFrom(user) {
-        if (!user) return "anonymous";
-        return user.username || user.first_name || "anonymous";
-    }
+    function usernameFrom(user){ return user ? (user.username || user.first_name || "anonymous") : "anonymous"; }
 
     function mergeSession(cur, msg) {
         const s = cur || { expanded:false };
@@ -60,8 +56,17 @@
         return s;
     }
 
-    function escapeHtml(str) {
-        return str.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    function escapeHtml(str){ return str.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+    function compactEvent(msg) {
+        if (msg.type === 'progress') return { type:'progress', taskId: msg.taskId, pct: msg.progress };
+        if (msg.type === 'result') {
+            const out = { type:'result', taskId: msg.taskId, ok: msg.ok };
+            if (msg.result) { out.status = msg.result.status; out.size = msg.result.size; }
+            if (msg.error)  { out.error  = msg.error; }
+            return out;
+        }
+        return { type: msg.type };
     }
 
     function render() {
@@ -72,11 +77,19 @@
             const tr = document.createElement('tr');
             const userLabel = usernameFrom(s.user);
 
+            const actHTML = `
+          <button class="send-btn" data-sid="${s.sessionId}">Send Task</button>
+          ${ s.last
+                ? `<div class="bar"><div style="width:${Math.min(100, s.last.progress || (s.last.ok === false ? 0 : 100))}%"></div></div>
+                 <div class="muted">${s.last.type || ''} ${s.last.status ? ('status ' + s.last.status) : ''} ${s.last.ok === false ? 'error' : ''}</div>`
+                : '' }
+        `;
+
             tr.innerHTML = `
           <td><a class="user-link" data-sid="${s.sessionId}">${userLabel}</a></td>
           <td>${s.client?.platform || "—"}</td>
           <td>${s.ts ? new Date(s.ts).toLocaleTimeString() : "—"}</td>
-          <td><button class="send-btn" data-sid="${s.sessionId}">Send Task</button></td>
+          <td>${actHTML}</td>
         `;
             rowsEl.appendChild(tr);
 
@@ -84,14 +97,9 @@
                 const det = document.createElement('tr');
                 det.className = "details";
                 const payload = {
-                    sessionId: s.sessionId,
-                    appId: s.appId || null,
-                    user: s.user || null,
-                    client: s.client || null,
-                    browser: s.browser || null,
-                    storage: s.storage || null,
-                    capabilities: s.capabilities || null,
-                    ts: s.ts || null
+                    sessionId: s.sessionId, appId: s.appId || null,
+                    user: s.user || null, client: s.client || null, browser: s.browser || null,
+                    storage: s.storage || null, capabilities: s.capabilities || null, ts: s.ts || null
                 };
                 const logsHTML = (s.logs && s.logs.length)
                     ? `<h3 style="margin:12px 0 6px">Recent Events</h3><pre>${escapeHtml(JSON.stringify(s.logs.slice(0,5), null, 2))}</pre>`
@@ -101,7 +109,6 @@
             }
         }
 
-        // attach click/tap handlers
         rowsEl.querySelectorAll('a.user-link').forEach(a => {
             a.onclick = (e) => {
                 const sid = e.currentTarget.getAttribute('data-sid');
@@ -121,9 +128,10 @@
                     const n = parseInt(prompt("Count to N", "10000") || "10000", 10);
                     payload = { n: isNaN(n) ? 10000 : n };
                 } else if (kind === "fetch") {
-                    const u = prompt("URL (allowed: example.com, httpbin.org)", "https://example.com/");
+                    const u = prompt("URL (try CORS-enabled first)", "https://example.com/");
                     if (!u) return;
-                    payload = { url: u };
+                    const where = (prompt("Run where? client | server | auto", "client") || "client").toLowerCase();
+                    payload = { url: u, where };
                 } else {
                     alert("Unknown task type"); return;
                 }
@@ -142,15 +150,12 @@
         });
     }
 
-    // --- WS WIRING ---
+    // --- WS WIRING + keep-alive for Heroku ---
     let ws, pingTimer;
-
     function connect() {
         ws = new WebSocket(WS_URL);
-
         ws.onopen = () => {
             connEl.textContent = "connected";
-            // keep the socket warm for Heroku (kills idle ~55s)
             clearInterval(pingTimer);
             pingTimer = setInterval(() => {
                 if (ws.readyState === WebSocket.OPEN) {
@@ -158,15 +163,12 @@
                 }
             }, 25000);
         };
-
         ws.onclose = () => {
             connEl.textContent = "disconnected — retrying in 3s";
             clearInterval(pingTimer);
             setTimeout(connect, 3000);
         };
-
         ws.onerror = () => { connEl.textContent = "error"; };
-
         ws.onmessage = (e) => {
             let msg; try { msg = JSON.parse(e.data) } catch { return }
 
@@ -184,20 +186,40 @@
                 state.set(sid, mergeSession(cur, msg));
                 render(); return;
             }
-            if (msg.type === 'progress' || msg.type === 'result') {
-                const sid = msg.sessionId;
-                const s = state.get(sid);
+            if (msg.type === 'task_enqueued') {
+                const s = state.get(msg.sessionId) || { sessionId: msg.sessionId, expanded:false };
+                s.last = { taskId: msg.taskId, type: msg.taskType, progress: 0 };
+                s.logs = s.logs || [];
+                s.logs.unshift({ t: new Date(msg.ts).toLocaleTimeString(), payload: { type:'task_enqueued', taskId: msg.taskId, taskType: msg.taskType } });
+                state.set(msg.sessionId, s);
+                render(); return;
+            }
+            if (msg.type === 'progress') {
+                const s = state.get(msg.sessionId);
                 if (s) {
                     s.ts = msg.ts || Date.now();
+                    s.last = Object.assign({}, s.last, { progress: msg.progress, type: s.last?.type || 'cpu' });
                     s.logs = s.logs || [];
-                    s.logs.unshift({ t: new Date(s.ts).toLocaleTimeString(), payload: msg });
+                    s.logs.unshift({ t: new Date(s.ts).toLocaleTimeString(), payload: { type:'progress', taskId: msg.taskId, pct: msg.progress } });
+                    s.logs = s.logs.slice(0, 10);
+                    render();
+                }
+                return;
+            }
+            if (msg.type === 'result') {
+                const s = state.get(msg.sessionId);
+                if (s) {
+                    s.ts = msg.ts || Date.now();
+                    s.last = Object.assign({}, s.last, { ok: msg.ok, status: msg.result && msg.result.status });
+                    s.logs = s.logs || [];
+                    s.logs.unshift({ t: new Date(s.ts).toLocaleTimeString(), payload: { type:'result', taskId: msg.taskId, ok: msg.ok, status: msg.result?.status, size: msg.result?.size } });
+                    s.logs = s.logs.slice(0, 10);
                     render();
                 }
                 return;
             }
         };
     }
-
     connect();
 </script>
 </body>
