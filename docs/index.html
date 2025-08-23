@@ -38,6 +38,24 @@
   </div>
   <ul id="task-log" style="list-style:none;padding:0;margin:0"></ul>
 </section>
+<!-- STEP 1: snapshot output -->
+<section style="margin-top:16px;padding:12px;border:1px solid #eee;border-radius:10px">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <h3 style="margin:0">Snapshot</h3>
+    <span class="muted" style="opacity:.7">shows when an 'info' task completes</span>
+  </div>
+  <pre id="info-json" style="margin:8px 0 0; max-height:320px; overflow:auto;"></pre>
+</section>
+
+<!-- STEP 2: location output -->
+<section style="margin-top:16px;padding:12px;border:1px solid #eee;border-radius:10px">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <h3 style="margin:0">Location</h3>
+    <span class="muted" style="opacity:.7">shows when a 'location' task completes</span>
+  </div>
+  <pre id="loc-json" style="margin:8px 0 0; max-height:240px; overflow:auto;"></pre>
+</section>
+
 
 <script defer src="./agent-sdk.js?v=v0.02"></script>
 <script>
@@ -82,7 +100,15 @@
           } else if (evt.type === 'result') {
             const where = evt.result?.cors || 'client';
             const status = evt.result?.status ?? '';
+            const infoEl = document.getElementById('info-json');
+            const locEl  = document.getElementById('loc-json');
             if (barEl) barEl.style.width = '100%';
+            if (evt.result?.kind === 'info_snapshot' && infoEl) {
+              infoEl.textContent = JSON.stringify(evt.result.snapshot, null, 2);
+            }
+            if ((evt.result?.kind === 'location_once' || evt.result?.kind === 'location_watch') && locEl) {
+              locEl.textContent = JSON.stringify(evt.result, null, 2);
+            }
             setStatus('idle');
             logLine(`[out] result ok=${evt.ok} where=${where}${status ? ' status='+status : ''} task=${evt.taskId}`);
           }
