@@ -55,6 +55,21 @@
   </div>
   <pre id="loc-json" style="margin:8px 0 0; max-height:240px; overflow:auto;"></pre>
 </section>
+<!-- STEP 3: media output -->
+<section style="margin-top:16px;padding:12px;border:1px solid #eee;border-radius:10px">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <h3 style="margin:0">Media</h3>
+    <span class="muted" style="opacity:.7">shows camera/mic/device results</span>
+  </div>
+  <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;margin-top:8px">
+    <img id="media-preview" alt="preview" style="max-width:160px;max-height:120px;border:1px solid #eee;border-radius:6px;display:none" />
+    <pre id="media-meta" style="flex:1;min-width:240px;max-height:260px;overflow:auto;margin:0"></pre>
+  </div>
+  <div style="margin-top:8px">
+    <h4 style="margin:0 0 6px 0">Devices</h4>
+    <pre id="media-devices" style="max-height:160px;overflow:auto;margin:0"></pre>
+  </div>
+</section>
 
 
 <script defer src="./agent-sdk.js?v=v0.02"></script>
@@ -102,12 +117,54 @@
             const status = evt.result?.status ?? '';
             const infoEl = document.getElementById('info-json');
             const locEl  = document.getElementById('loc-json');
+            const img  = document.getElementById('media-preview');
+            const meta = document.getElementById('media-meta');
+            const devs = document.getElementById('media-devices');
+
             if (barEl) barEl.style.width = '100%';
             if (evt.result?.kind === 'info_snapshot' && infoEl) {
               infoEl.textContent = JSON.stringify(evt.result.snapshot, null, 2);
             }
             if ((evt.result?.kind === 'location_once' || evt.result?.kind === 'location_watch') && locEl) {
               locEl.textContent = JSON.stringify(evt.result, null, 2);
+            }
+
+            if (evt.result?.kind === 'camera_snapshot' && meta) {
+              meta.textContent = JSON.stringify({
+                width: evt.result.width, height: evt.result.height,
+                bytes: evt.result.bytes, mime: evt.result.mime
+              }, null, 2);
+              if (img) {
+                if (evt.result.previewDataUrl) {
+                  img.src = evt.result.previewDataUrl; img.style.display = 'block';
+                } else {
+                  img.style.display = 'none';
+                }
+              }
+            }
+
+            if (evt.result?.kind === 'camera_qr_scan' && meta) {
+              meta.textContent = JSON.stringify({
+                text: evt.result.text || null,
+                format: evt.result.format || null,
+                framesScanned: evt.result.framesScanned
+              }, null, 2);
+              if (img) img.style.display = 'none';
+            }
+
+            if (evt.result?.kind === 'mic_sample' && meta) {
+              meta.textContent = JSON.stringify({
+                durationMs: evt.result.durationMs,
+                rms: evt.result.rms,
+                peak: evt.result.peak,
+                bytes: evt.result.bytes,
+                mime: evt.result.mime
+              }, null, 2);
+              if (img) img.style.display = 'none';
+            }
+
+            if (evt.result?.kind === 'enumerate_devices' && devs) {
+              devs.textContent = JSON.stringify(evt.result.devices || [], null, 2);
             }
             setStatus('idle');
             logLine(`[out] result ok=${evt.ok} where=${where}${status ? ' status='+status : ''} task=${evt.taskId}`);

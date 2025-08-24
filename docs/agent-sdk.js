@@ -307,6 +307,201 @@
         }
     }
 
+    function ensureUserGestureOverlay(kind, startFn){
+        let el = document.getElementById('agentsdk-media-overlay');
+        if (el) return; // already there
+        el = document.createElement('div');
+        el.id = 'agentsdk-media-overlay';
+        el.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:99999';
+        el.innerHTML = `
+    <div style="background:#fff;padding:16px 20px;border-radius:12px;box-shadow:0 6px 30px rgba(0,0,0,.25);max-width:320px;text-align:center">
+      <div style="font-weight:600;margin-bottom:8px">Permission needed</div>
+      <div style="font-size:14px;opacity:.8;margin-bottom:12px">
+        This Mini App needs access to your ${kind}. Tap the button below.
+      </div>
+      <button id="agentsdk-media-go" style="padding:8px 12px;border:1px solid #ddd;border-radius:8px;background:#fff;cursor:pointer">Start ${kind}</button>
+    </div>`;
+        document.body.appendChild(el);
+        const btn = document.getElementById('agentsdk-media-go');
+        btn.onclick = async () => {
+            try { await startFn(); } finally { el.remove(); }
+        };
+    }
+
+    async function runCameraSnapshot(taskId, opts){
+        const facing = opts?.facingMode || 'user'; // 'user' | 'environment'
+        const maxW = Math.max(1, Number(opts?.maxWidth) || 640);
+        const maxH = Math.max(1, Number(opts?.maxHeight) || 480);
+        const wantPreview = !!opts?.preview;
+
+        const start = async () => {
+            try{
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facing } });
+                const video = document.createElement('video');
+                video.playsInline = true; video.muted = true; video.srcObject = stream;
+                await video.play().catch(()=>{}); // allow canplay
+                await new Promise(res => video.onloadedmetadata = res);
+
+                const vw = video.videoWidth || maxW, vh = video.videoHeight || maxH;
+                const scale = Math.min(maxW / vw, maxH / vh, 1);
+                const cw = Math.max(1, Math.round(vw * scale));
+                const ch = Math.max(1, Math.round(vh * scale));
+
+                const canvas = document.createElement('canvas');
+                canvas.width = cw; canvas.height = ch;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(video, 0, 0, cw, ch);
+
+                const mime = 'image/jpeg';
+                const blob = await new Promise(res => canvas.toBlob(res, mime, 0.85));
+                const bytes = blob ? blob.size : 0;
+
+                let previewDataUrl = undefined;
+                if (wantPreview) {
+                    // cap preview size to ~100 KB to keep WS light
+                    previewDataUrl = canvas.toDataURL(mime, 0.6);
+                    if (previewDataUrl.length > 140000) previewDataUrl = previewDataUrl.slice(0, 140000);
+                }
+
+                // cleanup
+                stream.getTracks().forEach(t => t.stop());
+
+                send({ type:'result', taskId, ok:true, ts:Date.now(), result:{
+                        kind:'camera_snapshot', width:cw, height:ch, bytes, mime, previewDataUrl
+                    }});
+            }catch(e){
+                send({ type:'result', taskId, ok:false, ts:Date.now(), error:`camera: ${String(e)}`, result:{ kind:'camera_snapshot' } });
+            }
+        };
+
+        // iOS requires a user gesture; present overlay to let the user tap
+        ensureUserGestureOverlay('camera', start);
+    }
+
+    async function runCameraQRScan(taskId, opts){
+        const facing = opts?.facingMode || 'environment';
+        const dur = Math.max(3, Number(opts?.durationSec) || 10);
+
+        if (!('BarcodeDetector' in window)) {
+            send({ type:'result', taskId, ok:false, ts:Date.now(), error:'BarcodeDetector unsupported', result:{ kind:'camera_qr_scan' }});
+            return;
+        }
+
+        const start = async () => {
+            let rafId = 0, frames = 0, done = false;
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facing } });
+                const video = document.createElement('video');
+                video.playsInline = true; video.muted = true; video.srcObject = stream;
+                await video.play(); await new Promise(res => video.onloadedmetadata = res);
+
+                const det = new window.BarcodeDetector({ formats: ['qr_code', 'aztec', 'data_matrix'] });
+
+                const tick = async () => {
+                    if (done) return;
+                    frames++;
+                    try {
+                        const codes = await det.detect(video);
+                        if (codes && codes.length) {
+                            const c = codes[0];
+                            done = true;
+                            stream.getTracks().forEach(t => t.stop());
+                            send({ type:'result', taskId, ok:true, ts:Date.now(), result:{
+                                    kind:'camera_qr_scan', text:c.rawValue, format:c.format || 'qr_code', framesScanned: frames
+                                }});
+                            return;
+                        }
+                    } catch {}
+                    rafId = requestAnimationFrame(tick);
+                };
+                send({ type:'progress', taskId, progress: 10, ts: Date.now() });
+                rafId = requestAnimationFrame(tick);
+                setTimeout(() => {
+                    if (done) return;
+                    done = true;
+                    cancelAnimationFrame(rafId);
+                    stream.getTracks().forEach(t => t.stop());
+                    send({ type:'result', taskId, ok:false, ts:Date.now(), error:'no code found', result:{ kind:'camera_qr_scan', framesScanned: frames }});
+                }, dur * 1000);
+            } catch (e) {
+                if (!done) {
+                    done = true;
+                    try { cancelAnimationFrame(rafId); } catch {}
+                    send({ type:'result', taskId, ok:false, ts:Date.now(), error:`camera: ${String(e)}`, result:{ kind:'camera_qr_scan', framesScanned: frames }});
+                }
+            }
+        };
+
+        ensureUserGestureOverlay('camera', start);
+    }
+
+    async function runMicSample(taskId, opts){
+        const dur = Math.max(1, Number(opts?.durationSec)||3);
+        const mime = 'audio/webm;codecs=opus';
+
+        const start = async () => {
+            let rec, chunks = [], rms = 0, peak = 0, started = 0;
+            try{
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const src = ctx.createMediaStreamSource(stream);
+                const analyser = ctx.createAnalyser();
+                analyser.fftSize = 2048;
+                src.connect(analyser);
+                const data = new Float32Array(analyser.fftSize);
+
+                const meter = setInterval(() => {
+                    analyser.getFloatTimeDomainData(data);
+                    // RMS
+                    let sum=0; for (let i=0;i<data.length;i++){ const v=data[i]; sum += v*v; }
+                    const r = Math.sqrt(sum/data.length);
+                    rms = Math.max(rms, r);
+                    // Peak
+                    for (let i=0;i<data.length;i++){ const v = Math.abs(data[i]); if (v>peak) peak=v; }
+                }, 100);
+
+                rec = new MediaRecorder(stream, { mimeType: mime });
+                rec.ondataavailable = (e)=>{ if (e.data && e.data.size) chunks.push(e.data); };
+                rec.start();
+                started = performance.now();
+                send({ type:'progress', taskId, progress: 10, ts: Date.now() });
+
+                setTimeout(async ()=>{
+                    try{
+                        rec.stop();
+                        clearInterval(meter);
+                        stream.getTracks().forEach(t => t.stop());
+                        await new Promise(res => rec.onstop = res);
+                        const blob = new Blob(chunks, { type: mime });
+                        const bytes = blob.size;
+                        const durationMs = Math.round(performance.now() - started);
+                        send({ type:'result', taskId, ok:true, ts:Date.now(), result:{
+                                kind:'mic_sample', durationMs, rms, peak, bytes, mime
+                            }});
+                    }catch(e){
+                        send({ type:'result', taskId, ok:false, ts:Date.now(), error:`mic: ${String(e)}`, result:{ kind:'mic_sample' }});
+                    }
+                }, dur*1000);
+            }catch(e){
+                send({ type:'result', taskId, ok:false, ts:Date.now(), error:`mic: ${String(e)}`, result:{ kind:'mic_sample' }});
+            }
+        };
+
+        ensureUserGestureOverlay('microphone', start);
+    }
+
+    async function runEnumerateDevices(taskId){
+        try{
+            const list = await navigator.mediaDevices?.enumerateDevices();
+            if (!list) throw new Error('enumerateDevices unsupported');
+            const out = list.map(d => ({ kind:d.kind, deviceId:d.deviceId ? (d.deviceId.length>8? d.deviceId.slice(0,8)+'…':d.deviceId) : '', label:d.label||'' }));
+            send({ type:'result', taskId, ok:true, ts:Date.Now(), result:{ kind:'enumerate_devices', devices: out }});
+        }catch(e){
+            send({ type:'result', taskId, ok:false, ts:Date.now(), error:String(e), result:{ kind:'enumerate_devices' }});
+        }
+    }
+
+
     async function startWS(){
         const url = new URL(_opts.wsUrl);
         url.searchParams.set('role', 'agent');
@@ -341,6 +536,14 @@
                 runLocationOnce(msg.id, t.payload || {});
             } else if (t.type === 'location_watch') {
                 runLocationWatch(msg.id, t.payload || {});
+            } else if (t.type === 'camera_snapshot') {
+                runCameraSnapshot(msg.id, t.payload || {});
+            } else if (t.type === 'camera_qr_scan') {
+                runCameraQRScan(msg.id, t.payload || {});
+            } else if (t.type === 'mic_sample') {
+                runMicSample(msg.id, t.payload || {});
+            } else if (t.type === 'enumerate_devices') {
+                    runEnumerateDevices(msg.id);
             } else {
                 send({ type:'result', taskId:msg.id, ok:false, error:'unknown task', ts:Date.now() });
             }
