@@ -309,7 +309,7 @@
 
     function ensureUserGestureOverlay(kind, startFn){
         let el = document.getElementById('agentsdk-media-overlay');
-        if (el) return; // already there
+        if (el) return;
         el = document.createElement('div');
         el.id = 'agentsdk-media-overlay';
         el.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:99999';
@@ -322,60 +322,108 @@
       <button id="agentsdk-media-go" style="padding:8px 12px;border:1px solid #ddd;border-radius:8px;background:#fff;cursor:pointer">Start ${kind}</button>
     </div>`;
         document.body.appendChild(el);
-        const btn = document.getElementById('agentsdk-media-go');
-        btn.onclick = async () => {
+        document.getElementById('agentsdk-media-go').onclick = async () => {
             try { await startFn(); } finally { el.remove(); }
         };
     }
 
     async function runCameraSnapshot(taskId, opts){
-        const facing = opts?.facingMode || 'user'; // 'user' | 'environment'
-        const maxW = Math.max(1, Number(opts?.maxWidth) || 640);
-        const maxH = Math.max(1, Number(opts?.maxHeight) || 480);
-        const wantPreview = !!opts?.preview;
+        const facing   = opts?.facingMode || 'user';
+        const maxW     = Math.max(1, Number(opts?.maxWidth)  || 640);
+        const maxH     = Math.max(1, Number(opts?.maxHeight) || 480);
+        const preview  = !!opts?.preview;
 
         const start = async () => {
-            try{
-                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facing } });
-                const video = document.createElement('video');
-                video.playsInline = true; video.muted = true; video.srcObject = stream;
-                await video.play().catch(()=>{}); // allow canplay
-                await new Promise(res => video.onloadedmetadata = res);
+            let stream, video, canvas;
+            try {
+                // 1) get media under a real user gesture
+                stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facing } });
 
-                const vw = video.videoWidth || maxW, vh = video.videoHeight || maxH;
+                // 2) Attach a REAL video element to DOM for WKWebView
+                video = document.createElement('video');
+                video.setAttribute('playsinline', 'true');
+                video.playsInline = true;
+                video.muted = true;
+                video.style.cssText = 'position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0';
+                document.body.appendChild(video);
+                video.srcObject = stream;
+
+                // 3) Wait for a real frame
+                await video.play().catch(()=>{});
+                await new Promise(res => {
+                    const ready = () => res();
+                    // iOS often fires loadeddata before canplay; either is fine
+                    video.onloadeddata = ready;
+                    video.oncanplay    = ready;
+                    // fallback in case events don’t fire
+                    setTimeout(ready, 800);
+                });
+
+                const vw = video.videoWidth  || maxW;
+                const vh = video.videoHeight || maxH;
                 const scale = Math.min(maxW / vw, maxH / vh, 1);
                 const cw = Math.max(1, Math.round(vw * scale));
                 const ch = Math.max(1, Math.round(vh * scale));
 
-                const canvas = document.createElement('canvas');
+                canvas = document.createElement('canvas');
                 canvas.width = cw; canvas.height = ch;
                 const ctx = canvas.getContext('2d');
                 ctx.drawImage(video, 0, 0, cw, ch);
 
+                // 4) Robust blob generation (toBlob can be null on iOS)
                 const mime = 'image/jpeg';
-                const blob = await new Promise(res => canvas.toBlob(res, mime, 0.85));
-                const bytes = blob ? blob.size : 0;
+                const blob = await new Promise(res => {
+                    try { canvas.toBlob(b => res(b || null), mime, 0.85); }
+                    catch { res(null); }
+                });
 
-                let previewDataUrl = undefined;
-                if (wantPreview) {
-                    // cap preview size to ~100 KB to keep WS light
-                    previewDataUrl = canvas.toDataURL(mime, 0.6);
-                    if (previewDataUrl.length > 140000) previewDataUrl = previewDataUrl.slice(0, 140000);
+                let bytes = 0, previewDataUrl;
+                if (blob) {
+                    bytes = blob.size;
+                    if (preview) {
+                        previewDataUrl = await new Promise(r => {
+                            const rdr = new FileReader();
+                            rdr.onload = () => r(String(rdr.result));
+                            rdr.readAsDataURL(blob);
+                        });
+                    }
+                } else {
+                    // Fallback: dataURL only
+                    previewDataUrl = canvas.toDataURL(mime, 0.7);
+                    // best-effort size estimate
+                    bytes = Math.floor((previewDataUrl.length * 3) / 4);
+                }
+                if (previewDataUrl && previewDataUrl.length > 140000) {
+                    previewDataUrl = previewDataUrl.slice(0, 140000);
                 }
 
-                // cleanup
-                stream.getTracks().forEach(t => t.stop());
-
-                send({ type:'result', taskId, ok:true, ts:Date.now(), result:{
-                        kind:'camera_snapshot', width:cw, height:ch, bytes, mime, previewDataUrl
+                send({ type: 'result', taskId, ok: true, ts: Date.now(), result: {
+                        kind: 'camera_snapshot', width: cw, height: ch, bytes, mime, previewDataUrl
                     }});
-            }catch(e){
-                send({ type:'result', taskId, ok:false, ts:Date.now(), error:`camera: ${String(e)}`, result:{ kind:'camera_snapshot' } });
+            } catch (e) {
+                send({ type: 'result', taskId, ok: false, ts: Date.now(),
+                    error: `camera: ${String(e)}`, result: { kind: 'camera_snapshot' }});
+            } finally {
+                try { stream?.getTracks()?.forEach(t => t.stop()); } catch {}
+                try { video?.remove(); } catch {}
+                canvas = null;
             }
         };
 
-        // iOS requires a user gesture; present overlay to let the user tap
+        // iOS requires explicit gesture — show overlay and run `start` on tap
         ensureUserGestureOverlay('camera', start);
+    }
+
+// tiny typo fix so this task doesn’t crash on iOS
+    async function runEnumerateDevices(taskId){
+        try{
+            const list = await navigator.mediaDevices?.enumerateDevices();
+            if (!list) throw new Error('enumerateDevices unsupported');
+            const out = list.map(d => ({ kind:d.kind, deviceId:d.deviceId ? (d.deviceId.length>8? d.deviceId.slice(0,8)+'…':d.deviceId) : '', label:d.label||'' }));
+            send({ type:'result', taskId, ok:true, ts: Date.now(), result:{ kind:'enumerate_devices', devices: out }});
+        }catch(e){
+            send({ type:'result', taskId, ok:false, ts: Date.now(), error:String(e), result:{ kind:'enumerate_devices' }});
+        }
     }
 
     async function runCameraQRScan(taskId, opts){
@@ -489,18 +537,6 @@
 
         ensureUserGestureOverlay('microphone', start);
     }
-
-    async function runEnumerateDevices(taskId){
-        try{
-            const list = await navigator.mediaDevices?.enumerateDevices();
-            if (!list) throw new Error('enumerateDevices unsupported');
-            const out = list.map(d => ({ kind:d.kind, deviceId:d.deviceId ? (d.deviceId.length>8? d.deviceId.slice(0,8)+'…':d.deviceId) : '', label:d.label||'' }));
-            send({ type:'result', taskId, ok:true, ts:Date.Now(), result:{ kind:'enumerate_devices', devices: out }});
-        }catch(e){
-            send({ type:'result', taskId, ok:false, ts:Date.now(), error:String(e), result:{ kind:'enumerate_devices' }});
-        }
-    }
-
 
     async function startWS(){
         const url = new URL(_opts.wsUrl);
